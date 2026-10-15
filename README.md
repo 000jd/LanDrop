@@ -143,6 +143,13 @@ make mobile-dev            # run with live reload
 Requirements: Android SDK + platform-tools + NDK (`ANDROID_HOME`, NDK ≥ 28),
 JDK 17, and `cargo install tauri-cli --version '^2'`.
 
+Installing on a phone: `make mobile-build-phone`, `make mobile-sign`, then copy
+`desktop/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk`
+to the phone and tap it (enable "install unknown apps" for your file manager),
+or `make mobile-install` with USB debugging on. The signing target uses a local
+**debug** keystore, which is fine for sideloading; a published release would use
+your own release keystore (`key.properties`).
+
 What works: discovery (UDP beacon + mDNS), sending, accepting/rejecting, the
 folder picker, speed/ETA, SSE live updates, settings, progress in the UI. The
 backend runs inside the app process and the webview talks to it on
