@@ -240,3 +240,13 @@ Mapping onto LanDrop (no fake controls):
 Phases: plan + token research → disk-usage API → UI rewrite (html/css/js) → desktop
 screenshots (light/dark/phone) → Android APK rebuild + emulator screenshot → docs + commit →
 final checks.
+
+Status: **implemented and verified.** All three surfaces now use the soft-glass language
+(shared `ui/`): mint gradient + frosted shell, sticky icon rail with the theme toggle, live
+near-black stat chips, white cards with mini tiles, amber gauge driven by the new
+`disk_free`/`disk_total` in `/api/info`, pill buttons/inputs, restyled picker and glass
+toasts; light is the default theme and dark is the same composition in dark glass. Verified
+with real screenshots (light, dark, receive, settings, 390px phone) and on the Pixel 6
+emulator; a real click on the rail theme toggle was checked in-browser, 41 unit + 20
+integration tests green, clippy clean on desktop and Android targets, desktop bundles and the
+signed arm64 phone APK rebuilt.
