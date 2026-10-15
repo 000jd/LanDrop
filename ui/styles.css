@@ -14,10 +14,10 @@
   --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
 
-  --r-shell: 22px;
-  --r-card: 16px;
-  --r-chip: 12px;
-  --r-pill: 999px;
+  --r-shell: 0;
+  --r-card: 0;
+  --r-chip: 0;
+  --r-pill: 0;
 
   /* Light palette (from the reference) */
   --page: #d8d2c8;
@@ -35,8 +35,8 @@
   --ok-soft: rgba(17, 17, 17, 0.06);
   --err: #c62f0c;
   --danger-soft: rgba(198, 47, 12, 0.14);
-  --shadow: 5px 5px 0 var(--line);
-  --shadow-sm: 3px 3px 0 var(--line);
+  --shadow: none;
+  --shadow-sm: none;
   --outline: 2px;
 }
 
@@ -98,39 +98,6 @@ body {
 }
 
 /* --------------------------------------------------------------------------
-   Marquee ribbon (reference: ★ TIER TWO ★ strip)
-   -------------------------------------------------------------------------- */
-
-.marquee {
-  overflow: hidden;
-  margin: -4px -4px 0;
-  border: var(--outline) solid var(--line);
-  border-radius: var(--r-pill);
-  background: var(--accent);
-  color: var(--accent-ink);
-}
-
-.marquee-track {
-  display: flex;
-  gap: 28px;
-  width: max-content;
-  padding: 6px 18px;
-  font-size: 10.5px;
-  font-weight: 800;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  animation: marquee 26s linear infinite;
-}
-
-.marquee-track span { display: inline-flex; align-items: center; gap: 28px; }
-
-@keyframes marquee {
-  from { transform: translateX(0); }
-  to { transform: translateX(-50%); }
-}
-
-/* --------------------------------------------------------------------------
    Top bar with tabs
    -------------------------------------------------------------------------- */
 
@@ -151,7 +118,6 @@ body {
 
 .logo-img {
   display: block;
-  border-radius: 10px;
   border: var(--outline) solid var(--line);
 }
 
@@ -193,10 +159,10 @@ body {
   font-weight: 700;
   cursor: pointer;
   box-shadow: var(--shadow-sm);
-  transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
-.tab:hover { transform: translate(-1px, -1px); }
+.tab:hover { background: var(--card-2); }
 
 .tab.active {
   background: var(--accent);
@@ -263,7 +229,7 @@ body {
   box-shadow: var(--shadow-sm);
 }
 
-.activity:hover { transform: translate(-1px, -1px); }
+.activity:hover { filter: brightness(1.06); }
 
 .theme-toggle {
   display: grid;
@@ -290,7 +256,6 @@ html[data-theme="dark"] .icon-sun { display: block; }
 .theme-toggle:hover {
   background: var(--accent);
   color: var(--accent-ink);
-  transform: translate(-1px, -1px);
 }
 
 /* --------------------------------------------------------------------------
@@ -401,7 +366,6 @@ main { min-width: 0; }
   place-items: center;
   width: 46px;
   height: 46px;
-  border-radius: 14px;
   border: var(--outline) solid var(--line);
   background: var(--accent);
   color: var(--accent-ink);
@@ -473,10 +437,10 @@ main { min-width: 0; }
   background: var(--card);
   cursor: pointer;
   box-shadow: var(--shadow-sm);
-  transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
-.peer:hover { transform: translate(-1px, -1px); }
+.peer:hover { background: var(--card-2); }
 
 .peer.selected {
   background: var(--accent);
@@ -588,12 +552,11 @@ main { min-width: 0; }
   font-weight: 800;
   cursor: pointer;
   box-shadow: var(--shadow-sm);
-  transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
 .btn:hover:not(:disabled) {
-  transform: translate(-1px, -1px);
-  box-shadow: 4px 4px 0 var(--line);
+  background: var(--card-2);
 }
 
 .btn:disabled {
@@ -621,7 +584,6 @@ main { min-width: 0; }
   padding: 5px 12px;
   min-height: 30px;
   font-size: 11.5px;
-  box-shadow: 2px 2px 0 var(--line);
 }
 
 /* Underline fields (reference: Email / Subscription rows). */
@@ -661,13 +623,11 @@ input[type="checkbox"] {
   width: 20px;
   height: 20px;
   flex: none;
-  border-radius: 6px;
   border: var(--outline) solid var(--line);
   background: var(--card);
   display: inline-grid;
   place-content: center;
   cursor: pointer;
-  box-shadow: 2px 2px 0 var(--line);
 }
 
 input[type="checkbox"]:checked {
@@ -744,7 +704,6 @@ input[type="checkbox"]:checked::before {
   content: "";
   width: 7px;
   height: 7px;
-  border-radius: 50%;
   border: 1.5px solid var(--line);
   background: var(--ink);
 }
@@ -907,7 +866,6 @@ input[type="checkbox"]:checked::before {
   border-radius: var(--r-card);
   background: var(--surface);
   color: var(--ink);
-  box-shadow: 8px 8px 0 var(--line);
 }
 
 .picker::backdrop {
@@ -1077,7 +1035,6 @@ input[type="checkbox"]:checked::before {
   width: 9px;
   height: 9px;
   margin-top: 4px;
-  border-radius: 50%;
   border: 1.5px solid var(--line);
   background: var(--ink);
 }
@@ -1105,7 +1062,6 @@ input[type="checkbox"]:checked::before {
     min-height: auto;
     padding: 12px;
     gap: 12px;
-    border-radius: 18px;
   }
   .topbar { gap: 10px; }
   .tabs { display: none; }
@@ -1132,7 +1088,6 @@ input[type="checkbox"]:checked::before {
     grid-template-columns: repeat(4, 1fr);
     border-top: var(--outline) solid var(--line);
     background: var(--surface);
-    box-shadow: 0 -4px 0 rgba(17, 17, 17, 0.08);
   }
 
   .nav-item {
@@ -1193,5 +1148,4 @@ input[type="checkbox"]:checked::before {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
-  .marquee-track { animation: none; }
 }

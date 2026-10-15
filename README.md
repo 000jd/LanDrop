@@ -33,10 +33,10 @@ receiving side.
   login, no shared secret required — the app is open on your LAN by design)
 - Live UI updates over Server-Sent Events (SSE), including throttled progress;
   polling only as a fallback while SSE is unavailable
-- Retro-modern UI (cream surfaces, one bold red accent, thick black outlines
-  with hard offset shadows, marquee ribbon, dashed upload box, underline
-  fields, red pill primary buttons, bottom nav on phones) with a matching dark
-  mode — toggle in the top bar, saved per browser; light is the default
+- Retro-modern UI (cream surfaces, one bold red accent, thick black outlines,
+  flat surfaces with **no shadows** and **square corners**, dashed upload box,
+  underline fields, red primary buttons, bottom nav on phones) with a matching
+  dark mode — toggle in the top bar, saved per browser; light is the default
 - Desktop notifications on incoming requests, and a progress-bar notification
   while receiving (`notify-send` / notification daemon)
 - Persistent settings (name, port, download dir) in `~/.config/landrop/config.toml`;
