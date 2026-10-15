@@ -33,9 +33,10 @@ receiving side.
   login, no shared secret required — the app is open on your LAN by design)
 - Live UI updates over Server-Sent Events (SSE), including throttled progress;
   polling only as a fallback while SSE is unavailable
-- Soft-glass UI (mint background, frosted shell, icon rail, live stat chips,
-  disk gauge, rounded cards) with light **and** dark modes — toggle in the rail,
-  saved per browser; light is the default
+- Clean light dashboard UI (light-grey page, white bordered cards, segmented
+  pill tabs, caps section labels, green/red status chips, charcoal primary
+  buttons) with a matching dark mode — toggle in the top bar, saved per
+  browser; light is the default
 - Desktop notifications on incoming requests, and a progress-bar notification
   while receiving (`notify-send` / notification daemon)
 - Persistent settings (name, port, download dir) in `~/.config/landrop/config.toml`;
@@ -375,8 +376,8 @@ accept and never persisted.
 
 ## Screenshots
 
-Soft-glass theme (default), light and dark — same UI in the browser, the desktop
-app and the Android app:
+Flat dashboard theme (default), light and dark — same UI in the browser, the
+desktop app and the Android app:
 
 | Send (light) | Send (dark) | Receive | Settings |
 | --- | --- | --- | --- |
