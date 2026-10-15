@@ -205,3 +205,38 @@ transfer from the desktop node was accepted **by tapping ACCEPT in the Android U
 SHA-256 matched on both sides; the folder picker works on Android (mobile layout). Desktop
 suite still green (60 tests), clippy clean on both targets, repo initialised with a dedicated
 `.gitignore` (gen/android committed, build output ignored).
+
+## Round 5: glassmorphism redesign (soft-UI reference) — planned
+
+Goal: replace the monochrome HUD look with the reference design language across **all three
+surfaces** (browser UI, desktop app, Android app — they share the embedded `ui/`), keeping
+every feature and both colour modes.
+
+Tokens read from the reference image:
+
+- Page: soft mint/sage gradient; one large rounded **glass shell** (radius ~30px, blur, thin
+  white border, soft green-tinted shadow) holding the whole app.
+- Sidebar icon **rail** with circular buttons (active = solid dark circle); top bar with
+  pill-shaped controls; white rounded **cards** (radius 20) with very soft shadows.
+- **Floating dark stat chips** (near-black, radius 14) with big bold numbers and small grey
+  captions; **mini tiles** (bordered rounded squares with a small icon) inside cards;
+  semicircular **gauge** (amber arc on a light track).
+- Accent: amber `#f4a91b` for markers/highlights; text `#141917 / #5f6b66 / #8d9a94`.
+- Typography: humanist sans, normal case — 30-34px bold numbers, 15-16px card titles,
+  11-12px grey labels (replaces the mono/uppercase HUD).
+
+Mapping onto LanDrop (no fake controls):
+
+- Rail: Send / Receive / Settings + theme toggle at the bottom (dark circle).
+- Hero card with the dropzone and three live chips: **Devices**, **Active transfers**, **Port**.
+- Devices card with mini tiles for the selected device (address / port / source).
+- Send card: chosen-file tile, target row, dark Send pill; transfers list below.
+- New **disk gauge** (free space of the download folder) — needs `util::disk_usage` and two
+  new `/api/info` fields.
+- Receive panel: pending requests with Accept/Reject, active & recent, activity pill in the
+  top bar. Settings: white cards with the existing controls plus value tiles.
+- Dark mode: same composition as "dark glass" (graphite-green glass, same accents).
+
+Phases: plan + token research → disk-usage API → UI rewrite (html/css/js) → desktop
+screenshots (light/dark/phone) → Android APK rebuild + emulator screenshot → docs + commit →
+final checks.

@@ -27,6 +27,20 @@ pub fn free_space(_path: &Path) -> u64 {
     0
 }
 
+/// `(free, total)` bytes of the filesystem containing `path` (None when unknown).
+#[cfg(unix)]
+pub fn disk_usage(path: &Path) -> Option<(u64, u64)> {
+    nix::sys::statvfs::statvfs(path).ok().map(|s| {
+        let unit = s.fragment_size();
+        (s.blocks_available() * unit, s.blocks() * unit)
+    })
+}
+
+#[cfg(not(unix))]
+pub fn disk_usage(_path: &Path) -> Option<(u64, u64)> {
+    None
+}
+
 /// Compact human duration: `42 s`, `3 min 5 s`, `2 h 4 min`.
 pub fn human_duration(secs: u64) -> String {
     if secs < 60 {
@@ -49,5 +63,13 @@ mod tests {
         assert_eq!(human_duration(65), "1 min 5 s");
         assert_eq!(human_duration(3600), "1 h 0 min");
         assert_eq!(human_duration(7860), "2 h 11 min");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disk_usage_reports_a_sane_filesystem() {
+        let (free, total) = disk_usage(Path::new("/")).expect("root filesystem is readable");
+        assert!(total > 0);
+        assert!(free <= total);
     }
 }

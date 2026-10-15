@@ -140,6 +140,7 @@ pub async fn api_info(State(state): State<AppState>) -> Response {
         .into_iter()
         .map(|ip| ip.to_string())
         .collect::<Vec<_>>();
+    let disk = crate::util::disk_usage(std::path::Path::new(&cfg.downloads));
     Json(json!({
         "id": cfg.id,
         "name": cfg.name,
@@ -147,6 +148,8 @@ pub async fn api_info(State(state): State<AppState>) -> Response {
         "downloads": cfg.downloads,
         "version": VERSION,
         "platform": std::env::consts::OS,
+        "disk_free": disk.map(|(f, _)| f),
+        "disk_total": disk.map(|(_, t)| t),
         "ips": ips,
     }))
     .into_response()

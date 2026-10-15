@@ -95,7 +95,6 @@ function setTheme(theme) {
   localStorage.setItem(THEME_KEY, theme);
   const btn = $("themeToggle");
   if (btn) {
-    btn.textContent = `MODE::${theme.toUpperCase()}`;
     btn.setAttribute(
       "aria-label",
       `Switch to ${theme === "dark" ? "light" : "dark"} theme`
@@ -108,8 +107,8 @@ function toggleTheme() {
 }
 
 // Applied immediately (this script runs at the end of <body>) so the saved
-// theme is in place before first paint.
-setTheme(localStorage.getItem(THEME_KEY) === "light" ? "light" : "dark");
+// theme is in place before first paint. Light is the default (new look).
+setTheme(localStorage.getItem(THEME_KEY) === "dark" ? "dark" : "light");
 
 // ---------------------------------------------------------------------------
 // Data loading (SSE-driven; poll fallback only when SSE is unavailable)
@@ -119,7 +118,8 @@ async function loadInfo() {
   try {
     state.info = await api("/api/info");
     $("version").textContent = "v" + state.info.version;
-    $("me").textContent = `${state.info.name} · port ${state.info.port}`;
+    $("me").textContent = state.info.name;
+    $("deviceChip").textContent = `port ${state.info.port}`;
     $("infoId").textContent = state.info.id;
     $("infoName").textContent = state.info.name;
     $("infoVersion").textContent = state.info.version;
@@ -132,6 +132,7 @@ async function loadInfo() {
       loginToggle.closest("label").hidden = isMobile;
     }
     showLocalAddrs();
+    renderStats();
     loadSettings();
   } catch (e) {
     toast("Failed to load device info: " + e.message, "error");
@@ -258,6 +259,67 @@ function renderAll() {
   updateBadge();
   noteNewOffers();
   renderActivity();
+  renderStats();
+}
+
+// Hero chips, device/file mini tiles, panel hints and the disk gauge.
+function renderStats() {
+  const info = state.info || {};
+  const peers = state.peers.length;
+  const active = state.transfers.filter((t) =>
+    ["preparing", "waiting", "accepted", "transferring"].includes(t.status)
+  ).length;
+  $("statDevices").textContent = peers;
+  $("statActive").textContent = active;
+  $("statPort").textContent = info.port != null ? info.port : "—";
+  $("devicesHint").textContent = peers === 1 ? "1 found" : `${peers} found`;
+
+  // Disk gauge: the amber arc shows the free share of the download volume.
+  const free = info.disk_free;
+  const total = info.disk_total;
+  if (typeof free === "number" && typeof total === "number" && total > 0) {
+    const arcLen = 163.4; // ≈ π × r for the semicircle (r = 52)
+    const freeShare = Math.max(0, Math.min(1, free / total));
+    $("gaugeArc").setAttribute("stroke-dasharray", `${(freeShare * arcLen).toFixed(1)} 999`);
+    $("gaugeNum").textContent = fmtSize(free);
+    $("gaugeSub").textContent = `free of ${fmtSize(total)}`;
+    $("infoDisk").textContent = `${fmtSize(free)} free of ${fmtSize(total)}`;
+  } else {
+    $("gaugeArc").setAttribute("stroke-dasharray", "0 999");
+    $("gaugeNum").textContent = "—";
+    $("infoDisk").textContent = "unknown";
+  }
+
+  // Selected-device tiles.
+  const sel = state.peers.find((p) => p.id === state.selectedPeerId);
+  $("deviceMiniAddr").textContent = sel ? sel.addr : "—";
+  $("deviceMiniPort").textContent = sel ? sel.port : "—";
+  $("deviceMiniSource").textContent = sel
+    ? sel.source === "mdns" || sel.source === "lan"
+      ? "nearby"
+      : sel.source
+    : "—";
+
+  // Selected-file tiles + hints.
+  const f = state.selectedFile;
+  $("sendMiniFile").textContent = f ? f.name : "—";
+  $("sendMiniSize").textContent = f ? fmtSize(f.size) : "—";
+  $("fileHint").textContent = f ? "ready to send" : "none yet";
+  const manual = $("manualAddr").value.trim();
+  $("sendMiniTarget").textContent = sel ? sel.name : manual || "—";
+
+  const waiting = state.transfers.filter(
+    (t) => t.direction === "incoming" && t.status === "waiting"
+  ).length;
+  $("pendingHint").textContent = waiting ? `${waiting} waiting` : "";
+  const incomingTotal = state.transfers.filter((t) => t.direction === "incoming").length;
+  $("incomingHint").textContent = incomingTotal ? `${incomingTotal} total` : "";
+  const outgoingActive = state.transfers.filter(
+    (t) =>
+      t.direction === "outgoing" &&
+      ["preparing", "waiting", "accepted", "transferring"].includes(t.status)
+  ).length;
+  $("outgoingHint").textContent = outgoingActive ? `${outgoingActive} active` : "idle";
 }
 
 // Always-visible receive progress, so the Receive tab is optional.
@@ -333,9 +395,9 @@ function transferCard(t) {
       </div>
       ${showProgress ? `<div class="progress"><div style="width:${pct}%"></div></div><div class="pct">${pct}%${rate}${eta}</div>` : ""}
       ${saved}
-      ${canCancel ? `<div class="t-actions"><button class="btn danger sm" data-cancel="${esc(t.id)}">Cancel</button></div>` : ""}
+      ${canCancel ? `<div class="t-actions"><button class="btn ghost sm" data-cancel="${esc(t.id)}">Cancel</button></div>` : ""}
       ${canAccept ? `<div class="t-actions">
-          <button class="btn primary sm" data-accept="${esc(t.id)}">Accept</button>
+          <button class="btn dark sm" data-accept="${esc(t.id)}">Accept</button>
           <button class="btn danger sm" data-reject="${esc(t.id)}">Reject</button>
         </div>` : ""}
     </div>
@@ -594,7 +656,7 @@ function setupDropzone() {
 // ---------------------------------------------------------------------------
 
 function showTab(name) {
-  document.querySelectorAll(".tab").forEach((b) => {
+  document.querySelectorAll(".rail-btn[data-tab]").forEach((b) => {
     const on = b.dataset.tab === name;
     b.classList.toggle("active", on);
     b.setAttribute("aria-selected", on ? "true" : "false");
@@ -605,11 +667,11 @@ function showTab(name) {
 
 function setupTabs() {
   const saved = localStorage.getItem("landrop.tab") || "send";
-  document.querySelectorAll(".tab").forEach((btn) => {
+  document.querySelectorAll(".rail-btn[data-tab]").forEach((btn) => {
     btn.onclick = () => showTab(btn.dataset.tab);
   });
   // Restore saved tab if it exists, else keep default (send).
-  if (document.querySelector(`.tab[data-tab="${saved}"]`)) showTab(saved);
+  if (document.querySelector(`.rail-btn[data-tab="${saved}"]`)) showTab(saved);
 }
 
 // ---------------------------------------------------------------------------

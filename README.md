@@ -33,8 +33,9 @@ receiving side.
   login, no shared secret required — the app is open on your LAN by design)
 - Live UI updates over Server-Sent Events (SSE), including throttled progress;
   polling only as a fallback while SSE is unavailable
-- Dark and light monochrome HUD theme with a top-bar toggle (`MODE::DARK` /
-  `MODE::LIGHT`), saved per browser; dark is the default
+- Soft-glass UI (mint background, frosted shell, icon rail, live stat chips,
+  disk gauge, rounded cards) with light **and** dark modes — toggle in the rail,
+  saved per browser; light is the default
 - Desktop notifications on incoming requests, and a progress-bar notification
   while receiving (`notify-send` / notification daemon)
 - Persistent settings (name, port, download dir) in `~/.config/landrop/config.toml`;
@@ -348,7 +349,7 @@ landrop/
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /api/info` | device id, name, port, download dir, version, LAN IPs |
+| `GET /api/info` | device id, name, port, download dir, version, LAN IPs, free/total disk space |
 | `GET /api/peers` | discovered + manual peers |
 | `POST /api/peers/manual` | add a manual peer (`{"address":"ip:port"}`) |
 | `GET /api/transfers` | all transfers |
@@ -374,26 +375,24 @@ accept and never persisted.
 
 ## Screenshots
 
-Dark theme (default):
+Soft-glass theme (default), light and dark — same UI in the browser, the desktop
+app and the Android app:
+
+| Send (light) | Send (dark) | Receive | Settings |
+| --- | --- | --- | --- |
+| ![Send, light](docs/screenshots/glass-light-send.png) | ![Send, dark](docs/screenshots/glass-dark-send.png) | ![Receive](docs/screenshots/glass-light-receive.png) | ![Settings](docs/screenshots/glass-light-settings.png) |
+
+Phone layout (the rail becomes a top row of icon buttons):
+
+| Send, phone |
+| --- |
+| ![Phone layout](docs/screenshots/glass-mobile-send.png) |
+
+Older monochrome HUD screenshots (previous design, kept for reference):
 
 | Send | Receive | Settings |
 | --- | --- | --- |
 | ![Send tab, dark](docs/screenshots/dark-send.png) | ![Receive tab, dark](docs/screenshots/dark-receive.png) | ![Settings tab, dark](docs/screenshots/dark-settings.png) |
-
-Light theme:
-
-| Send |
-| --- |
-| ![Send tab, light](docs/screenshots/light-send.png) |
-
-Switch themes with the `MODE::DARK` / `MODE::LIGHT` button in the top bar;
-the choice is saved per browser.
-
-Receiving with a live ETA, the folder picker, and the progress strip:
-
-| Receive with ETA | Folder picker | Progress strip |
-| --- | --- | --- |
-| ![Receive with ETA](docs/screenshots/receive-eta.png) | ![Folder picker](docs/screenshots/picker-save-folder.png) | ![Activity strip](docs/screenshots/activity-strip.png) |
 
 Android app (same UI, same features):
 
