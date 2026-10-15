@@ -93,12 +93,14 @@ function currentTheme() {
 function setTheme(theme) {
   document.documentElement.setAttribute("data-theme", theme);
   localStorage.setItem(THEME_KEY, theme);
-  const btn = $("themeToggle");
-  if (btn) {
-    btn.setAttribute(
-      "aria-label",
-      `Switch to ${theme === "dark" ? "light" : "dark"} theme`
-    );
+  for (const id of ["themeToggle", "themeToggleNav"]) {
+    const btn = $(id);
+    if (btn) {
+      btn.setAttribute(
+        "aria-label",
+        `Switch to ${theme === "dark" ? "light" : "dark"} theme`
+      );
+    }
   }
 }
 
@@ -396,9 +398,12 @@ function renderOutgoing() {
 
 function updateBadge() {
   const n = state.transfers.filter((t) => t.direction === "incoming" && t.status === "waiting").length;
-  const b = $("pendingBadge");
-  b.hidden = n === 0;
-  b.textContent = n;
+  for (const id of ["pendingBadge", "navBadge"]) {
+    const b = $(id);
+    if (!b) continue;
+    b.hidden = n === 0;
+    b.textContent = n;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -627,7 +632,7 @@ function setupDropzone() {
 // ---------------------------------------------------------------------------
 
 function showTab(name) {
-  document.querySelectorAll(".tab[data-tab]").forEach((b) => {
+  document.querySelectorAll(".tab[data-tab], .nav-item[data-tab]").forEach((b) => {
     const on = b.dataset.tab === name;
     b.classList.toggle("active", on);
     b.setAttribute("aria-selected", on ? "true" : "false");
@@ -638,7 +643,7 @@ function showTab(name) {
 
 function setupTabs() {
   const saved = localStorage.getItem("landrop.tab") || "send";
-  document.querySelectorAll(".tab[data-tab]").forEach((btn) => {
+  document.querySelectorAll(".tab[data-tab], .nav-item[data-tab]").forEach((btn) => {
     btn.onclick = () => showTab(btn.dataset.tab);
   });
   // Restore saved tab if it exists, else keep default (send).
@@ -860,6 +865,8 @@ function init() {
   setupDropzone();
   setupPicker();
   $("themeToggle").onclick = toggleTheme;
+  const navTheme = $("themeToggleNav");
+  if (navTheme) navTheme.onclick = toggleTheme;
   $("activity").onclick = () => showTab("receive");
   $("browseDownloadsBtn").onclick = async () => {
     const choice = await openPicker("settings", $("setDownloads").value.trim());

@@ -250,3 +250,29 @@ with real screenshots (light, dark, receive, settings, 390px phone) and on the P
 emulator; a real click on the rail theme toggle was checked in-browser, 41 unit + 20
 integration tests green, clippy clean on desktop and Android targets, desktop bundles and the
 signed arm64 phone APK rebuilt.
+
+## Round 6: retro-modern (neobrutalist) theme — planned
+
+Goal: the reference's retro-modern language across web + desktop + Android, keeping the
+layout that is already agreed (top tabs, Pick a file / Choose a device / Send, stacked
+Receive and Settings) and adding the reference's mobile bottom navigation.
+
+Tokens read from the reference image:
+
+- Warm cream surfaces (`#fbf1e0` panels, `#fffaf0` cards) on a warm grey page, with
+  **bold red** `#e4572e` as the single accent and near-black ink.
+- **Thick black outlines (2px) with hard offset shadows** (`5px 5px 0`), radius ~16 for
+  cards, pills for buttons/tabs/badges.
+- Chunky bold typography (700-800 weights, normal case), small grey captions.
+- Signature elements to reuse: the **red marquee ribbon** with ★ separators, the
+  **dashed upload box** (already our dropzone), **underline form fields**, red icon tiles in
+  bordered cards, a **bottom nav** with red active items, red pill "primary" buttons with
+  black outlines (the Premium card treatment).
+
+Mapping: Send/Save/Accept = red pill; secondary = cream pill; tabs = segmented control with a
+red active pill; hints = small bordered chips; status = black for completed, red for
+waiting/failed (text distinguishes), red progress fill; theme toggle stays in the top bar and
+also appears in the mobile bottom nav.
+
+Phases: plan → theme rewrite (css/html/app.js) → screenshots (light/dark/receive/settings/
+mobile with bottom nav) → desktop bundles + phone APK → docs + commit → final checks.

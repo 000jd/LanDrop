@@ -33,10 +33,10 @@ receiving side.
   login, no shared secret required — the app is open on your LAN by design)
 - Live UI updates over Server-Sent Events (SSE), including throttled progress;
   polling only as a fallback while SSE is unavailable
-- Clean light dashboard UI (light-grey page, white bordered cards, segmented
-  pill tabs, caps section labels, green/red status chips, charcoal primary
-  buttons) with a matching dark mode — toggle in the top bar, saved per
-  browser; light is the default
+- Retro-modern UI (cream surfaces, one bold red accent, thick black outlines
+  with hard offset shadows, marquee ribbon, dashed upload box, underline
+  fields, red pill primary buttons, bottom nav on phones) with a matching dark
+  mode — toggle in the top bar, saved per browser; light is the default
 - Desktop notifications on incoming requests, and a progress-bar notification
   while receiving (`notify-send` / notification daemon)
 - Persistent settings (name, port, download dir) in `~/.config/landrop/config.toml`;
@@ -376,14 +376,14 @@ accept and never persisted.
 
 ## Screenshots
 
-Flat dashboard theme (default), light and dark — same UI in the browser, the
+Retro-modern theme (default), light and dark — same UI in the browser, the
 desktop app and the Android app:
 
 | Send (light) | Send (dark) | Receive | Settings |
 | --- | --- | --- | --- |
 | ![Send, light](docs/screenshots/glass-light-send.png) | ![Send, dark](docs/screenshots/glass-dark-send.png) | ![Receive](docs/screenshots/glass-light-receive.png) | ![Settings](docs/screenshots/glass-light-settings.png) |
 
-Phone layout (the rail becomes a top row of icon buttons):
+Phone layout (the tabs become a fixed bottom nav, the way the reference does it):
 
 | Send, phone |
 | --- |
