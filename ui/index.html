@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LanDrop</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="icon" href="/logo.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/logo.svg" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img class="logo-img" src="/logo.svg" alt="LanDrop" width="28" height="28" />
+      <span class="brand-name">LanDrop</span>
+      <span class="version" id="version">…</span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" role="tab" aria-selected="true" data-tab="send">Send</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="receive">Receive <span class="badge" id="pendingBadge" hidden></span></button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="settings">Settings</button>
+    </nav>
+    <button class="activity" id="activity" type="button" hidden></button>
+    <div class="me" id="me">…</div>
+    <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle color theme">MODE::DARK</button>
+  </header>
+
+  <main>
+    <!-- ============ SEND ============ -->
+    <section class="panel active" id="panel-send">
+      <div class="grid-two">
+        <div class="card">
+          <h2>1 · Pick a file</h2>
+          <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Choose a file to send">
+            <input type="file" id="fileInput" hidden />
+            <div class="dropzone-icon">⇪</div>
+            <p class="dropzone-title">Drop a file here</p>
+            <p class="dropzone-sub">or click to browse</p>
+          </div>
+          <div class="file-chosen" id="fileChosen" hidden>
+            <div>
+              <strong id="chosenName"></strong>
+              <span class="muted" id="chosenSize"></span>
+            </div>
+            <button class="btn ghost sm" id="clearFile">✕</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>2 · Choose a device</h2>
+          <div id="peerList" class="peer-list"></div>
+          <div class="empty" id="peerEmpty">No other LanDrop devices on this Wi-Fi yet. Each computer, phone, or tablet must run the LanDrop app (opening this page in a browser on another device does not make it a receiver). You can also type its LAN address below.</div>
+          <div class="manual-row">
+            <input type="text" id="manualAddr" placeholder="192.168.1.25:8420" />
+            <button class="btn ghost sm" id="addManualBtn">Add</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>3 · Send</h2>
+        <div class="send-row">
+          <strong id="sendTargetLabel" class="muted">No device selected</strong>
+          <button class="btn primary" id="sendBtn" disabled>Send</button>
+        </div>
+        <div id="outgoingList" class="transfer-list"></div>
+      </div>
+    </section>
+
+    <!-- ============ RECEIVE ============ -->
+    <section class="panel" id="panel-receive">
+      <div class="card">
+        <h2>Incoming requests</h2>
+        <div id="pendingList" class="transfer-list"></div>
+          <div class="empty receive" id="pendingEmpty">No pending transfers</div>
+      </div>
+      <div class="card">
+        <h2>Active &amp; recent</h2>
+        <div id="incomingList" class="transfer-list"></div>
+          <div class="empty receive" id="incomingEmpty">No transfers yet</div>
+      </div>
+    </section>
+
+    <!-- ============ SETTINGS ============ -->
+    <section class="panel" id="panel-settings">
+      <div class="card">
+        <h2>Settings</h2>
+        <div class="form-grid">
+          <label>Device name
+            <input type="text" id="setName" />
+          </label>
+          <label>Port
+            <input type="number" id="setPort" min="1" max="65535" />
+          </label>
+          <label>Download folder
+            <span class="input-row">
+              <input type="text" id="setDownloads" />
+              <button class="btn ghost sm" id="browseDownloadsBtn" type="button">Browse…</button>
+            </span>
+          </label>
+          <label class="check"><input type="checkbox" id="setAutoAccept" /> Auto-accept incoming files</label>
+          <label class="check"><input type="checkbox" id="setAskSavePath" /> Ask where to save each received file</label>
+          <label class="check"><input type="checkbox" id="setStartOnLogin" /> Start in the background when I log in</label>
+        </div>
+        <p class="muted sm settings-hint">Background mode keeps this device visible on the LAN without opening the window. Incoming files show an Accept / Reject notification.</p>
+        <div class="save-row">
+          <button class="btn primary" id="saveSettingsBtn">Save</button>
+          <span class="muted sm" id="settingsNote">Changing port applies on restart</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>This device</h2>
+        <div class="info-grid">
+          <div><span class="muted">Device ID</span><span id="infoId">…</span></div>
+          <div><span class="muted">Name</span><span id="infoName">…</span></div>
+          <div><span class="muted">LAN address</span><span id="infoAddrs">…</span></div>
+          <div><span class="muted">Version</span><span id="infoVersion">…</span></div>
+          <div><span class="muted">Download folder</span><span id="infoDownloads">…</span></div>
+        </div>
+        <div class="device-actions">
+          <button class="btn ghost sm" id="copyUrlBtn">Copy LAN URL</button>
+          <button class="btn ghost sm" id="openFolderBtn">Open download folder</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="folderPicker" class="picker" aria-labelledby="pickerTitle">
+    <div class="picker-form">
+      <header class="picker-head">
+        <h3 id="pickerTitle">Choose a folder</h3>
+        <span class="muted sm" id="pickerNote"></span>
+      </header>
+      <div class="picker-body">
+        <div class="picker-places" id="pickerPlaces"></div>
+        <div class="picker-main">
+          <div class="picker-path-row">
+            <button class="btn ghost sm" id="pickerUp" type="button">Up</button>
+            <input type="text" id="pickerPath" spellcheck="false" aria-label="Current folder path" />
+            <button class="btn ghost sm" id="pickerGo" type="button">Go</button>
+          </div>
+          <div class="picker-list" id="pickerList"></div>
+          <div class="picker-new-row">
+            <input type="text" id="pickerNewName" placeholder="New folder name" aria-label="New folder name" />
+            <button class="btn ghost sm" id="pickerMkdir" type="button">Create</button>
+          </div>
+        </div>
+      </div>
+      <footer class="picker-foot">
+        <span class="muted sm" id="pickerCurrent">…</span>
+        <span class="picker-buttons">
+          <button class="btn ghost sm" id="pickerCancel" type="button">Cancel</button>
+          <button class="btn sm" id="pickerDefault" type="button" hidden>Use default folder</button>
+          <button class="btn primary sm" id="pickerUse" type="button">Use this folder</button>
+        </span>
+      </footer>
+    </div>
+  </dialog>
+
+  <div id="toasts" class="toasts"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

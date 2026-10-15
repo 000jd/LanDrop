@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "LanDrop",
+  "version": "0.1.0",
+  "identifier": "dev.landrop.app",
+  "build": {
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "",
+    "devUrl": "http://127.0.0.1:8420",
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "rpm", "appimage"],
+    "icon": [
+      "../assets/icon.svg",
+      "../assets/icon.png"
+    ],
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    }
+  }
+}

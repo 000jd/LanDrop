@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=LanDrop
+Comment=LAN file sharing
+Comment[en]=LAN file sharing
+Exec=landrop
+Icon=landrop
+Terminal=false
+Type=Application
+Categories=Utility;Network;FileTransfer;
+Keywords=file;transfer;lan;share;wifi;
+StartupNotify=true

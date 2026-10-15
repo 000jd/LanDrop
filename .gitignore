@@ -1,0 +1,27 @@
+# Rust / Cargo
+/target/
+**/target/
+bin/
+
+# Agent/editor state
+.commandcode/
+
+# Android (Tauri `gen/android` is committed on purpose; only build output is ignored)
+desktop/gen/android/.gradle/
+desktop/gen/android/build/
+desktop/gen/android/app/build/
+desktop/gen/android/local.properties
+desktop/gen/android/.idea/
+desktop/gen/android/app/src/main/assets/
+desktop/gen/android/*.keystore
+*.jks
+
+# Generated Android keystores / signing
+*.keystore
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Local runtime state
+*.log
