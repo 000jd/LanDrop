@@ -41,21 +41,22 @@
 }
 
 html[data-theme="dark"] {
-  --page: #171310;
-  --surface: #241d17;
-  --card: #2b231c;
-  --card-2: #332a21;
-  --ink: #f7ecdc;
-  --ink-2: #c3b3a0;
-  --ink-3: #97897a;
-  --line: #f7ecdc;
+  --page: #14120f;
+  --surface: #201c18;
+  --card: #272220;
+  --card-2: #302a25;
+  --ink: #f3ead9;
+  --ink-2: #b9ab99;
+  --ink-3: #8d8071;
+  /* Softer outlines in the dark: structure without the glare. */
+  --line: #574c40;
   --accent: #ff6a3d;
   --accent-ink: #1b120c;
-  --accent-soft: rgba(255, 106, 61, 0.18);
-  --ok: #f7ecdc;
-  --ok-soft: rgba(247, 236, 220, 0.08);
-  --err: #ff8a6a;
-  --danger-soft: rgba(255, 138, 106, 0.16);
+  --accent-soft: rgba(255, 106, 61, 0.16);
+  --ok: #f3ead9;
+  --ok-soft: rgba(243, 234, 217, 0.06);
+  --err: #ff8f70;
+  --danger-soft: rgba(255, 143, 112, 0.14);
 }
 
 * { box-sizing: border-box; }
@@ -86,11 +87,10 @@ body {
 .shell {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  max-width: 1060px;
-  min-height: calc(100vh - 60px);
+  gap: 12px;
+  max-width: 1020px;
   margin: 0 auto;
-  padding: 18px;
+  padding: 14px;
   border-radius: var(--r-shell);
   border: var(--outline) solid var(--line);
   background: var(--surface);
@@ -122,7 +122,7 @@ body {
 }
 
 .brand-name {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 800;
   letter-spacing: -0.02em;
 }
@@ -147,15 +147,15 @@ body {
 .tab {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 7px 15px;
-  min-height: 34px;
+  gap: 6px;
+  padding: 6px 13px;
+  min-height: 30px;
   border: var(--outline) solid var(--line);
   border-radius: var(--r-pill);
   background: var(--card);
   color: var(--ink);
   font: inherit;
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 700;
   cursor: pointer;
   box-shadow: var(--shadow-sm);
@@ -196,12 +196,12 @@ body {
 }
 
 .me {
-  padding: 6px 13px;
+  padding: 5px 11px;
   border-radius: var(--r-pill);
   border: var(--outline) solid var(--line);
   background: var(--card);
   color: var(--ink);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 700;
   white-space: nowrap;
   overflow: hidden;
@@ -234,8 +234,8 @@ body {
 .theme-toggle {
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 38px;
+  width: 34px;
+  height: 34px;
   padding: 0;
   border-radius: var(--r-pill);
   border: var(--outline) solid var(--line);
@@ -246,7 +246,7 @@ body {
   transition: transform 120ms ease, background 120ms ease;
 }
 
-.theme-toggle svg { width: 17px; height: 17px; }
+.theme-toggle svg { width: 16px; height: 16px; }
 
 /* Sun/moon swap inside the theme button. */
 .icon-sun { display: none; }
@@ -292,8 +292,8 @@ main { min-width: 0; }
 .card {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 16px;
+  gap: 10px;
+  padding: 14px;
   border-radius: var(--r-card);
   border: var(--outline) solid var(--line);
   background: var(--card);
@@ -311,7 +311,7 @@ main { min-width: 0; }
 
 .card-head h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 800;
   letter-spacing: -0.01em;
 }
@@ -341,8 +341,8 @@ main { min-width: 0; }
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 170px;
-  padding: 22px 20px;
+  min-height: 140px;
+  padding: 18px 16px;
   border-radius: var(--r-card);
   border: 2.5px dashed var(--line);
   background: var(--card-2);
@@ -364,15 +364,15 @@ main { min-width: 0; }
 .dz-icon {
   display: grid;
   place-items: center;
-  width: 46px;
-  height: 46px;
+  width: 42px;
+  height: 42px;
   border: var(--outline) solid var(--line);
   background: var(--accent);
   color: var(--accent-ink);
   box-shadow: var(--shadow-sm);
 }
 
-.dz-icon svg { width: 21px; height: 21px; }
+.dz-icon svg { width: 19px; height: 19px; }
 
 .dz-title {
   margin: 8px 0 0;
@@ -421,17 +421,17 @@ main { min-width: 0; }
 .peer-list {
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  max-height: 270px;
+  gap: 8px;
+  max-height: 240px;
   overflow: auto;
 }
 
 .peer {
   display: grid;
-  grid-template-columns: 40px 1fr auto;
+  grid-template-columns: 36px 1fr auto;
   align-items: center;
-  gap: 11px;
-  padding: 10px 11px;
+  gap: 10px;
+  padding: 8px 10px;
   border-radius: var(--r-chip);
   border: var(--outline) solid var(--line);
   background: var(--card);
@@ -457,13 +457,13 @@ main { min-width: 0; }
 .peer-avatar {
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   border-radius: var(--r-pill);
   border: var(--outline) solid var(--line);
   background: var(--accent);
   color: var(--accent-ink);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 800;
   text-transform: uppercase;
 }
@@ -541,8 +541,8 @@ main { min-width: 0; }
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 9px 18px;
-  min-height: 38px;
+  padding: 8px 15px;
+  min-height: 34px;
   border-radius: var(--r-pill);
   border: var(--outline) solid var(--line);
   background: var(--card);
@@ -581,8 +581,8 @@ main { min-width: 0; }
 }
 
 .btn.sm {
-  padding: 5px 12px;
-  min-height: 30px;
+  padding: 4px 10px;
+  min-height: 28px;
   font-size: 11.5px;
 }
 
@@ -590,15 +590,15 @@ main { min-width: 0; }
 input[type="text"],
 input[type="number"] {
   width: 100%;
-  padding: 7px 2px;
-  min-height: 34px;
+  padding: 6px 2px;
+  min-height: 30px;
   border: 0;
   border-bottom: var(--outline) solid var(--line);
   border-radius: 0;
   background: transparent;
   color: var(--ink);
   font: inherit;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 700;
   transition: border-color 120ms ease, background 120ms ease;
 }
@@ -656,7 +656,7 @@ input[type="checkbox"]:checked::before {
 .transfer-list:empty { display: none; }
 
 .transfer {
-  padding: 13px;
+  padding: 12px;
   border-radius: var(--r-chip);
   border: var(--outline) solid var(--line);
   background: var(--card);
@@ -732,8 +732,8 @@ input[type="checkbox"]:checked::before {
 .status-cancelled .t-status { color: var(--ink-2); }
 
 .progress {
-  height: 10px;
-  margin-top: 11px;
+  height: 9px;
+  margin-top: 9px;
   border-radius: var(--r-pill);
   border: var(--outline) solid var(--line);
   background: var(--card-2);
@@ -828,7 +828,7 @@ input[type="checkbox"]:checked::before {
 }
 
 .info-grid > div {
-  padding: 11px 12px;
+  padding: 9px 11px;
   border-radius: var(--r-chip);
   border: var(--outline) solid var(--line);
   background: var(--card-2);
@@ -1005,8 +1005,8 @@ input[type="checkbox"]:checked::before {
 
 .toasts {
   position: fixed;
-  right: 24px;
-  bottom: 24px;
+  right: 18px;
+  bottom: 18px;
   z-index: 100;
   display: flex;
   flex-direction: column;

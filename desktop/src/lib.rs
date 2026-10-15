@@ -322,8 +322,8 @@ pub fn run() {
                 .title("LanDrop");
             #[cfg(desktop)]
             let builder = builder
-                .inner_size(1100.0, 760.0)
-                .min_inner_size(900.0, 600.0)
+                .inner_size(960.0, 660.0)
+                .min_inner_size(720.0, 520.0)
                 .center()
                 .visible(!wants_hidden());
             builder.build()?;

@@ -119,7 +119,6 @@ setTheme(localStorage.getItem(THEME_KEY) === "dark" ? "dark" : "light");
 async function loadInfo() {
   try {
     state.info = await api("/api/info");
-    $("version").textContent = "v" + state.info.version;
     $("me").textContent = `${state.info.name} · port ${state.info.port}`;
     $("infoId").textContent = state.info.id;
     $("infoName").textContent = state.info.name;
