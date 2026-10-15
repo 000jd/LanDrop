@@ -120,6 +120,34 @@ pub fn acquire(dir: Option<&Path>) -> Result<Option<InstanceLock>> {
     }
 }
 
+/// Read the build marker from a node's `/api/info` with a tiny raw HTTP GET
+/// (short timeouts, no extra dependency).
+///
+/// `None` means "could not identify it" — which is how older builds, that do
+/// not report a build marker at all, are detected.
+pub fn remote_build(port: u16) -> Option<String> {
+    use std::io::{Read, Write};
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream =
+        std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(400)).ok()?;
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(600)));
+    stream
+        .write_all(b"GET /api/info HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .ok()?;
+    let mut body = String::new();
+    let _ = stream.read_to_string(&mut body);
+    parse_build(&body)
+}
+
+/// Pull `"build":"…"` out of a JSON body without a parser.
+pub fn parse_build(body: &str) -> Option<String> {
+    let key = "\"build\":\"";
+    let start = body.find(key)? + key.len();
+    let rest = &body[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
 /// Record that this process owns the node on `port`.
 pub fn write_info_in(dir: Option<&Path>, port: u16) {
     let Some(path) = info_path(dir) else {
@@ -188,5 +216,64 @@ mod tests {
         clear_if_ours_in(Some(dir.path()));
         assert!(!dir.path().join("instance.json").exists());
         drop(listener);
+    }
+
+    #[test]
+    fn parses_the_build_marker_from_api_info() {
+        let body = "HTTP/1.0 200 OK\r\n\r\n\
+                    {\"id\":\"x\",\"name\":\"PC\",\"build\":\"1760558000\",\"platform\":\"linux\"}";
+        assert_eq!(parse_build(body).as_deref(), Some("1760558000"));
+        // Older builds do not report a marker at all.
+        assert_eq!(parse_build("{\"id\":\"x\"}"), None);
+        assert_eq!(parse_build("not json"), None);
+    }
+
+    /// The desktop app uses this to decide whether it may attach to a running
+    /// node: same build -> attach, older/unknown -> start a fresh node.
+    #[tokio::test]
+    async fn remote_build_identifies_new_and_old_nodes() {
+        async fn respond_with(body: Option<&'static str>) -> u16 {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let resp = match body {
+                    Some(b) => format!(
+                        "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\n\r\n{}",
+                        b.len(),
+                        b
+                    ),
+                    // An "old" node: nothing answers /api/info.
+                    None => String::new(),
+                };
+                let _ = sock.write_all(resp.as_bytes()).await;
+            });
+            port
+        }
+
+        // A current node reports its marker.
+        let port = respond_with(Some("{\"id\":\"x\",\"build\":\"12345\"}")).await;
+        let seen = tokio::task::spawn_blocking(move || remote_build(port))
+            .await
+            .unwrap();
+        assert_eq!(seen.as_deref(), Some("12345"));
+
+        // A node that answers but carries no marker = older build.
+        let port = respond_with(Some("{\"id\":\"x\",\"name\":\"PC\"}")).await;
+        let seen = tokio::task::spawn_blocking(move || remote_build(port))
+            .await
+            .unwrap();
+        assert_eq!(seen, None);
+
+        // Nothing answering at all = cannot identify it.
+        let port = respond_with(None).await;
+        let seen = tokio::task::spawn_blocking(move || remote_build(port))
+            .await
+            .unwrap();
+        assert_eq!(seen, None);
     }
 }

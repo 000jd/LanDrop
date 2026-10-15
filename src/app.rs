@@ -41,6 +41,11 @@ pub struct NodeOptions {
     pub port_scan: bool,
     /// Max ports to try when `port_scan` is set (default 20).
     pub port_scan_limit: u16,
+    /// Start even when another instance already holds the single-instance lock
+    /// for this config dir. The desktop app sets this when the running instance
+    /// is a *different build*, so the new build still shows its own UI instead
+    /// of silently attaching to the old one (or refusing to start).
+    pub allow_second_instance: bool,
 }
 
 impl Default for NodeOptions {
@@ -53,6 +58,7 @@ impl Default for NodeOptions {
             config_dir: None,
             port_scan: true,
             port_scan_limit: 20,
+            allow_second_instance: false,
         }
     }
 }
@@ -153,9 +159,13 @@ pub async fn start_node(options: NodeOptions) -> Result<RunningNode> {
     cfg.ensure_downloads()?;
 
     // Single-instance guard for this config dir (closes the double-start race).
-    let instance_lock = match crate::instance::acquire(config_dir.as_deref())? {
-        Some(lock) => Some(Arc::new(lock)),
-        None => bail!("another LanDrop instance is already running for this config"),
+    let instance_lock = if options.allow_second_instance {
+        None
+    } else {
+        match crate::instance::acquire(config_dir.as_deref())? {
+            Some(lock) => Some(Arc::new(lock)),
+            None => bail!("another LanDrop instance is already running for this config"),
+        }
     };
 
     // Wire up shared state.

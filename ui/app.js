@@ -38,6 +38,18 @@ function fmtEta(secs) {
   return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
 }
 
+// Build marker ("15 Oct, 20:12") so a stale install is immediately obvious.
+function fmtBuild(unixSecs) {
+  const n = Number(unixSecs);
+  if (!n) return "unknown";
+  return new Date(n * 1000).toLocaleString([], {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 
 // Quote-safe: safe for both text and attribute contexts.
@@ -122,7 +134,9 @@ async function loadInfo() {
     $("me").textContent = `${state.info.name} · port ${state.info.port}`;
     $("infoId").textContent = state.info.id;
     $("infoName").textContent = state.info.name;
-    $("infoVersion").textContent = state.info.version;
+    $("infoVersion").textContent = state.info.build
+      ? `${state.info.version} · ${fmtBuild(state.info.build)}`
+      : state.info.version;
     $("infoDownloads").textContent = state.info.downloads;
     // Controls that only make sense on the machine hosting the app.
     const isMobile = state.info.platform === "android" || state.info.platform === "ios";
@@ -892,6 +906,19 @@ function init() {
   loadPeers();
   loadTransfers();
   connectEvents();
+
+  // The desktop app appends ?older_instance=<port> when another (older) LanDrop
+  // build is still running: that process keeps serving the old UI on its port,
+  // so say it out loud instead of letting it look like a failed update.
+  const older = new URLSearchParams(location.search).get("older_instance");
+  if (older) {
+    toast(
+      `An older LanDrop is still running on port ${older} — quit it from its tray menu to free that port`,
+      "warn",
+      15000,
+    );
+    history.replaceState(null, "", location.pathname);
+  }
 }
 
 document.addEventListener("DOMContentLoaded", init);

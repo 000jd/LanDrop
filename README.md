@@ -146,11 +146,18 @@ Requirements: Android SDK + platform-tools + NDK (`ANDROID_HOME`, NDK ≥ 28),
 JDK 17, and `cargo install tauri-cli --version '^2'`.
 
 Installing on a phone: `make mobile-build-phone`, `make mobile-sign`, then copy
-`desktop/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk`
-to the phone and tap it (enable "install unknown apps" for your file manager),
-or `make mobile-install` with USB debugging on. The signing target uses a local
-**debug** keystore, which is fine for sideloading; a published release would use
-your own release keystore (`key.properties`).
+`bin/LanDrop-android-arm64.apk` to the phone and tap it (enable "install unknown
+apps" for your file manager), or `make mobile-install` with USB debugging on.
+The signing target uses a local **debug** keystore, which is fine for
+sideloading; a published release would use your own release keystore
+(`key.properties`).
+
+Copying the APK by hand has one trap: phones keep every file with the same name
+(`LanDrop-android-arm64(1).apk`, `…(2).apk`, …), so it is easy to tap an old
+copy and conclude "the UI did not update". Names built by the release script are
+date-stamped (`LanDrop-arm64-2026-10-15.apk`) to avoid this — and after
+installing, **Settings → This device → Version** shows the build time, so you can
+tell instantly which copy is running.
 
 What works: discovery (UDP beacon + mDNS), sending, accepting/rejecting, the
 folder picker, speed/ETA, SSE live updates, settings, progress in the UI. The
@@ -174,17 +181,37 @@ Mobile behaviour to know about:
 ## Updating an installed copy
 
 The UI is compiled **into** the binary, so a new build only shows up once the
-old process is gone:
+old process is gone. Two things make that visible instead of confusing:
 
-1. **Quit the running app first** (tray → **Quit**). A newly launched copy
-   otherwise *attaches* to the existing instance (by design) and keeps serving
-   the old UI.
+- Every build carries a **build marker** (the build time), reported by
+  `/api/info` and shown in **Settings → This device → Version** as e.g.
+  `0.1.0 · 15 Oct, 20:34`. If that timestamp is older than your last build, you
+  are still looking at the old copy.
+- The app refuses to attach to a node built from **different** sources. Launching
+  a fresh build while an older copy is still running used to be swallowed by
+  Tauri's single-instance plugin (the new launch silently re-focused the old
+  window — this is why a new `.deb` could look like it "did nothing"). There is
+  no such plugin now: the new build starts its own node on the next free port,
+  logs
+  `the LanDrop already running on port 8420 is an older build (no build marker)`,
+  shows an in-app notice — *"An older LanDrop is still running on port 8420 —
+  quit it from its tray menu to free that port"* — and serves the new UI.
+
+1. **Quit the running app** (tray → **Quit**, or `pkill -f landrop-desktop`;
+   on Windows: Task Manager → end `landrop-desktop.exe`). Do this *before*
+   reinstalling so the old UI cannot linger anywhere.
 2. Rebuild and reinstall:
    - browser mode: `make build` (and `make install-desktop` if installed that way)
    - desktop app: `make desktop-build`, then install the fresh package from
      `target/release/bundle/` (deb/rpm/AppImage)
+   - Android: `make mobile-build-phone && make mobile-sign`, then install
+     `bin/LanDrop-android-arm64.apk` (`make mobile-install` with a USB cable is
+     the most reliable — updating over the running app always kills the old
+     process)
 3. Reload any open browser tab. UI files are served with
    `Cache-Control: no-cache`, so a normal refresh picks up the new assets.
+4. Check **Settings → Version** to confirm the build time matches the one you
+   just built.
 
 ## Run two instances on one machine (test / dev)
 
@@ -329,10 +356,10 @@ landrop/
   desktop/
     Cargo.toml          Tauri v2 wrapper crate (landrop-desktop)
     tauri.conf.json
-    src/main.rs         window, tray, single-instance, graceful shutdown
+    src/main.rs         window, tray, build-aware instance, graceful shutdown
   ui/
     index.html          single-page UI (tabs: Send / Receive / Settings)
-    styles.css          Notion-style light theme
+    styles.css          retro-modern theme (light + dark, flat and square)
     app.js              vanilla JS, SSE + fetch, debounced renders
   tests/
     integration.rs      in-process e2e (offer/accept/reject/upload) + start_node

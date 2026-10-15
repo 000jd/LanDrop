@@ -15,6 +15,15 @@
 //! - [`instance`]: single-instance lock file (pid + port).
 //! - [`util`]: small shared helpers (detached processes, disk space).
 
+/// Compile-time build marker (unix seconds of the last source/UI change).
+///
+/// Reported by `/api/info` and shown in Settings, and used to refuse attaching
+/// to a running node built from different sources.
+pub const BUILD_ID: &str = match option_env!("LANADROP_BUILD_ID") {
+    Some(v) => v,
+    None => "0",
+};
+
 pub mod app;
 pub mod autostart;
 pub mod config;

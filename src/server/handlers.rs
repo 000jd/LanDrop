@@ -147,6 +147,7 @@ pub async fn api_info(State(state): State<AppState>) -> Response {
         "port": port,
         "downloads": cfg.downloads,
         "version": VERSION,
+        "build": crate::BUILD_ID,
         "platform": std::env::consts::OS,
         "disk_free": disk.map(|(f, _)| f),
         "disk_total": disk.map(|(_, t)| t),

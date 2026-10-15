@@ -1,9 +1,22 @@
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
     println!("cargo:rerun-if-changed=assets/icon.svg");
     println!("cargo:rerun-if-changed=ui");
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=desktop/src");
     println!("cargo:rerun-if-changed=build.rs");
+
+    // Build marker: a unix timestamp that changes whenever any source or UI
+    // file changes. It is reported by /api/info and shown in Settings, so a
+    // stale binary (or a stale running instance) is immediately visible
+    // instead of looking like a UI that "did not update".
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    println!("cargo:rustc-env=LANADROP_BUILD_ID={stamp}");
 
     // Keep the embedded UI logo in sync with the canonical SVG mark. Only
     // write when the content actually differs, so plain builds never dirty

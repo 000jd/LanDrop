@@ -3,12 +3,13 @@
 //!
 //! Starts the LanDrop backend inside the process via `landrop::app::start_node`
 //! (or attaches to an already-running node) and points the webview at it.
-//! Desktop extras: tray icon, close-to-tray, single instance, signal handling.
+//! Desktop extras: tray icon, close-to-tray, build-aware single instance,
+//! signal handling.
 //! Mobile: paths come from the Tauri path API (Android has no XDG dirs) and the
 //! window is the activity's webview. The desktop binary (`main.rs`) is a thin
 //! shim over [`run`], which is also the mobile entry point.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
@@ -101,30 +102,101 @@ fn node_options(app: &tauri::AppHandle) -> Result<NodeOptions> {
     }
 }
 
+/// What to do about a node that is already serving for this config dir.
+enum Existing {
+    /// Nothing running.
+    None,
+    /// Same build — safe to attach to its UI.
+    SameBuild(String),
+    /// An older (or unknown) build: leave it alone and serve our own UI.
+    OtherBuild { port: u16, build: Option<String> },
+}
+
+/// Classify a live node for this config dir by the build it reports.
+fn existing_node(dir: Option<&Path>) -> Existing {
+    let Some(info) = landrop::instance::live_instance_in(dir) else {
+        return Existing::None;
+    };
+    match landrop::instance::remote_build(info.port) {
+        Some(build) if build == landrop::BUILD_ID => Existing::SameBuild(info.local_url()),
+        other => Existing::OtherBuild {
+            port: info.port,
+            build: other,
+        },
+    }
+}
+
+/// Result of bringing the backend up for this process.
+struct Backend {
+    /// UI URL the window should load.
+    url: String,
+    /// The node this process owns, if any.
+    node: Option<RunningNode>,
+    /// Whether this process started (and must stop) the node.
+    owns: bool,
+    /// Port of an older LanDrop instance that is still running, if any.
+    older_instance: Option<u16>,
+}
+
 /// Start the backend in-process, or attach to a live one.
-///
-/// Returns `(ui_url, node, owns_backend)`.
-fn start_backend(app: &tauri::AppHandle) -> Result<(String, Option<RunningNode>, bool)> {
-    let options = node_options(app)?;
+fn start_backend(app: &tauri::AppHandle) -> Result<Backend> {
+    let mut options = node_options(app)?;
     let config_dir: Option<PathBuf> = options.config_dir.clone().map(PathBuf::from);
     let dir_ref = config_dir.as_deref();
+    let mut older_instance = None;
 
-    if let Some(info) = landrop::instance::live_instance_in(dir_ref) {
-        info!("attaching to existing LanDrop at {}", info.local_url());
-        return Ok((info.local_url(), None, false));
+    match existing_node(dir_ref) {
+        Existing::SameBuild(url) => {
+            info!("attaching to existing LanDrop at {url}");
+            return Ok(Backend {
+                url,
+                node: None,
+                owns: false,
+                older_instance: None,
+            });
+        }
+        Existing::OtherBuild { port, build } => {
+            // This is the "installed the new version but still see the old UI"
+            // trap: an older process keeps serving its assets until it is
+            // quit. Do not attach to it (the window would show the old UI) and
+            // do not refuse to start (the lock is held by that process) —
+            // serve our own node on the next free port instead.
+            warn!(
+                "the LanDrop already running on port {port} is {}; starting this build ({}) on \
+                 another port — quit that instance to free port {port}",
+                match &build {
+                    Some(b) => format!("a different build ({b})"),
+                    None => "an older build (no build marker)".to_string(),
+                },
+                landrop::BUILD_ID
+            );
+            options.allow_second_instance = true;
+            older_instance = Some(port);
+        }
+        Existing::None => {}
     }
+
     match runtime().block_on(start_node(options)) {
         Ok(node) => {
             info!("backend started on {}", node.addr);
-            Ok((node.local_url(), Some(node), true))
+            Ok(Backend {
+                url: node.local_url(),
+                node: Some(node),
+                owns: true,
+                older_instance,
+            })
         }
         Err(e) => {
-            // Lost the startup race against another launch: attach instead.
-            if let Some(info) = landrop::instance::live_instance_in(dir_ref) {
-                info!("attached to existing LanDrop at {}", info.local_url());
-                Ok((info.local_url(), None, false))
-            } else {
-                Err(e)
+            // Lost the startup race against another launch: attach if it is
+            // the same build after all.
+            match existing_node(dir_ref) {
+                Existing::SameBuild(url) => Ok(Backend {
+                    url,
+                    node: None,
+                    owns: false,
+                    older_instance,
+                }),
+                _ => Err(e),
             }
         }
     }
@@ -294,20 +366,23 @@ fn spawn_signal_watcher(handle: tauri::AppHandle) {
 pub fn run() {
     init_tracing();
 
+    // NOTE: no `tauri-plugin-single-instance` here on purpose. That plugin
+    // forwards a second launch to the already-running process and then exits
+    // silently — which means a freshly installed build would never appear while
+    // an older copy of the app is still running ("I installed the new .deb and
+    // still see the old UI"). Our own instance logic is build-aware instead
+    // (see `start_backend`): same build -> attach to its node, different build
+    // -> serve our own node so the new UI is always shown.
     let builder = tauri::Builder::default();
-    #[cfg(desktop)]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-        show_main(app);
-    }));
 
     builder
         .setup(|app| {
             let handle = app.handle().clone();
-            let (url, node, owns_backend) = start_backend(&handle)
+            let backend = start_backend(&handle)
                 .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
             handle.manage(NodeState {
-                node: Arc::new(Mutex::new(node)),
-                owns_backend,
+                node: Arc::new(Mutex::new(backend.node)),
+                owns_backend: backend.owns,
             });
 
             #[cfg(desktop)]
@@ -315,7 +390,14 @@ pub fn run() {
                 warn!("tray unavailable ({e}); running window-only");
             }
 
-            let window_url: tauri::Url = url
+            // Tell the UI when an older instance is still holding its port, so
+            // the user knows to quit it instead of wondering why an update
+            // "did not work".
+            let window_src = match backend.older_instance {
+                Some(port) => format!("{}/?older_instance={port}", backend.url),
+                None => backend.url,
+            };
+            let window_url: tauri::Url = window_src
                 .parse()
                 .map_err(|e| -> Box<dyn std::error::Error> { format!("{e}").into() })?;
             let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(window_url))
