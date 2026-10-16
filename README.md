@@ -19,7 +19,13 @@
   </p>
 </div>
 
-![LanDrop desktop app: the Send tab with a laptop discovered on the LAN](demo/image1.png)
+<table>
+  <tr>
+    <td><img src="demo/lightmode.png" alt="LanDrop desktop app in light mode: Send tab with a laptop and a phone discovered on the LAN" width="100%" /></td>
+    <td><img src="demo/darkmode.png" alt="The same screen in dark mode, with the laptop selected as the target" width="100%" /></td>
+  </tr>
+  <tr><td align="center">Light</td><td align="center">Dark — same UI, one toggle</td></tr>
+</table>
 
 ## Your files. Your network.
 
@@ -147,10 +153,11 @@ no install at all.
   login, no shared secret required: the app is open on your LAN by design
 - Live UI updates over Server-Sent Events (SSE), including throttled progress;
   polling only as a fallback while SSE is unavailable
-- **Retro-modern UI** (cream surfaces, one bold red accent, thick outlines, flat
-  with **no shadows** and **square corners**, dashed upload box, underline
-  fields, red primary buttons, bottom nav on phones) with a matching **dark
-  mode** — toggle in the top bar, remembered per browser, light by default
+- **Quiet monochrome UI** (soft grey surfaces, hairline borders, pill chips whose
+  selected state is solid ink, small italic labels, rounded corners, one hard
+  offset shadow on primary actions, folder-drop zone, bottom nav on phones) with a
+  matching **dark mode** — toggle in the top bar, remembered per browser, light by
+  default
 - Desktop notifications for incoming requests, and a progress-bar notification
   while receiving (`notify-send` / notification daemon)
 - Persistent settings (name, port, download dir) in
@@ -370,8 +377,8 @@ manual_peers = ["192.168.1.25:8420"]
 
 ## Screenshots
 
-The retro-modern theme is the same in the browser, the desktop app and the
-Android app, and ships with a matching dark mode:
+The same quiet theme runs in the browser, the desktop app and the Android app,
+light and dark:
 
 <table>
   <tr>
@@ -506,7 +513,7 @@ landrop/
     src/main.rs         window, tray, build-aware instance, graceful shutdown
   ui/
     index.html          single-page UI (tabs: Send / Receive / Settings)
-    styles.css          retro-modern theme (light + dark, flat and square)
+    theme-quiet.css     quiet monochrome theme (light + dark)
     app.js              vanilla JS, SSE + fetch, debounced renders
   tests/
     integration.rs      in-process e2e (offer/accept/reject/upload) + start_node
@@ -514,7 +521,8 @@ landrop/
     run_two_local.sh
     generate_icons.py   # regenerate icon assets from assets/icon.svg
   demo/
-    image1.png          # README hero screenshot
+    lightmode.png       # README hero, light
+    darkmode.png        # README hero, dark
   docs/
     DESKTOP.md          Tauri Linux deps + Android build steps
     screenshots/        UI captures used in this README

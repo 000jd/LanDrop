@@ -1196,7 +1196,10 @@ pub async fn api_send_path(
             .and_then(|n| n.to_str())
             .unwrap_or("folder")
             .to_string(),
-        _ => format!("{} files", files.len()),
+        _ => match files.len() {
+            1 => "1 file".to_string(),
+            n => format!("{n} files"),
+        },
     });
 
     let mut peers = Vec::new();

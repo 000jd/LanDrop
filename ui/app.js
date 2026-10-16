@@ -435,7 +435,8 @@ const STATUS_TEXT = {
   cancelled: "Cancelled",
 };
 
-/// Group transfers into singles and batches, keeping list order.
+/// Group transfers into singles and batches, keeping list order. A batch with a
+/// single member is just a file: one row, no "Accept all 1".
 function groupBatches(items) {
   const groups = [];
   const byBatch = new Map();
@@ -452,7 +453,14 @@ function groupBatches(items) {
     }
     group.items.push(t);
   }
-  return groups;
+  return groups.map((g) =>
+    g.kind === "batch" && g.items.length === 1 ? { kind: "single", t: g.items[0] } : g
+  );
+}
+
+/// `1 file` / `3 files`.
+function fileCount(n) {
+  return `${n} file${n === 1 ? "" : "s"}`;
 }
 
 /// One row for a whole folder/selection: the receiver answers once for the batch,
@@ -491,7 +499,7 @@ function batchCard(g) {
         <div>
           <div class="t-file">${esc(g.name)}</div>
           <div class="t-meta">
-            <span>${items.length} files ${incoming ? "from" : "to"} ${esc(items[0].peer_name)}</span>
+            <span>${fileCount(items.length)} ${incoming ? "from" : "to"} ${esc(items[0].peer_name)}</span>
             <span>${fmtSize(size)}</span>
           </div>
           <div class="t-meta"><span class="batch-names">${esc(names)}${items.length > 3 ? " …" : ""}</span></div>
@@ -506,7 +514,7 @@ function batchCard(g) {
       ${
         canAccept
           ? `<div class="t-actions">
-          <button class="btn dark sm" data-accept-batch="${esc(g.id)}">Accept all ${items.length}</button>
+          <button class="btn dark sm" data-accept-batch="${esc(g.id)}">Accept all ${fileCount(items.length)}</button>
           <button class="btn danger sm" data-reject-batch="${esc(g.id)}">Reject</button>
         </div>`
           : ""

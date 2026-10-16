@@ -1,0 +1,1216 @@
+/* ---------------------------------------------------------------------------
+   LanDrop UI — light, quiet, monochrome design language.
+
+   Reference: soft grey surfaces, hairline borders, pill chips where the selected
+   one is solid ink, small italic labels, rounded corners, and one hard offset
+   shadow on the primary action. Everything is token-driven and the dark theme is
+   the same language inverted.
+
+   Layout and behaviour live in app.js; this file is presentation only, so class
+   names are the contract (a script checks that every class used in index.html and
+   app.js appears here).
+   -------------------------------------------------------------------------- */
+
+:root {
+  --page: #ededed;
+  --surface: #f3f3f3;
+  --card: #f8f8f8;
+  --card-2: #fcfcfc;
+
+  --ink: #161616;
+  --ink-2: #565656;
+  --ink-3: #8c8c8c;
+
+  --line: #dedede;
+  --line-strong: #949494;
+  --divider: #e4e4e4;
+
+  --accent: #161616;
+  --accent-ink: #fafafa;
+  --accent-soft: rgba(22, 22, 22, 0.05);
+  --danger: #b23c33;
+  --danger-soft: rgba(178, 60, 51, 0.08);
+
+  --outline: 1px;
+  --r-card: 14px;
+  --r-control: 10px;
+  --r-pill: 999px;
+
+  --shadow-hard: 3px 3px 0 var(--ink);
+  --shadow-soft: 0 10px 30px rgba(0, 0, 0, 0.07);
+
+  --font: Inter, "Segoe UI Variable", "Segoe UI", system-ui, -apple-system,
+    Cantarell, Ubuntu, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", SFMono-Regular, ui-monospace, Menlo, monospace;
+}
+
+html[data-theme="dark"] {
+  --page: #121212;
+  --surface: #191919;
+  --card: #1f1f1f;
+  --card-2: #242424;
+
+  --ink: #f1f1f1;
+  --ink-2: #ababab;
+  --ink-3: #7c7c7c;
+
+  --line: #2f2f2f;
+  --line-strong: #6b6b6b;
+  --divider: #2a2a2a;
+
+  --accent: #f1f1f1;
+  --accent-ink: #131313;
+  --accent-soft: rgba(241, 241, 241, 0.07);
+  --danger: #e2716a;
+  --danger-soft: rgba(226, 113, 106, 0.12);
+
+  --shadow-hard: 3px 3px 0 #3d3d3d;
+  --shadow-soft: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* `hidden` always wins: several components set their own `display`, and without
+   this they would ignore the attribute (empty "file chosen" bar, phantom
+   "Use default folder" button, activity strip, badges). */
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  min-height: 100vh;
+  padding: 26px 22px;
+  background: var(--page);
+  color: var(--ink);
+  font: 400 13.5px/1.5 var(--font);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* --------------------------------------------------------------------------
+   Frame
+   -------------------------------------------------------------------------- */
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 20px;
+  border: var(--outline) solid var(--line);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+
+/* --------------------------------------------------------------------------
+   Top bar: brand, pill tabs, quiet status chips
+   -------------------------------------------------------------------------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding-bottom: 16px;
+  border-bottom: var(--outline) solid var(--divider);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.logo-img {
+  border-radius: 9px;
+}
+
+.brand-name {
+  font-size: 19px;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+}
+
+.tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 15px;
+  min-height: 32px;
+  border: var(--outline) solid var(--line-strong);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-weight: 450;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease,
+    transform 140ms ease;
+}
+
+.tab:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+/* Selected chip: solid ink, exactly like the reference's active pills. */
+.tab.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 500;
+}
+
+.topbar-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  min-width: 0;
+}
+
+.me {
+  padding: 6px 13px;
+  border: var(--outline) solid var(--line-strong);
+  border-radius: var(--r-pill);
+  color: var(--ink-2);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+}
+
+.badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.nav-badge {
+  position: absolute;
+  top: 2px;
+  right: 22px;
+}
+
+.activity {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 22ch;
+  padding: 6px 13px;
+  border: var(--outline) solid var(--line-strong);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.activity:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.theme-toggle {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: var(--outline) solid var(--line-strong);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color 140ms ease, transform 140ms ease;
+}
+
+.theme-toggle:hover {
+  border-color: var(--ink);
+}
+
+.theme-toggle svg {
+  width: 15px;
+  height: 15px;
+}
+
+.icon-sun {
+  display: none;
+}
+html[data-theme="dark"] .icon-sun {
+  display: block;
+}
+html[data-theme="dark"] .icon-moon {
+  display: none;
+}
+
+/* --------------------------------------------------------------------------
+   Panels
+   -------------------------------------------------------------------------- */
+
+.panel {
+  display: none;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.panel.active {
+  display: flex;
+}
+
+.grid-two {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.empty {
+  padding: 14px 4px;
+  color: var(--ink-3);
+  font-size: 12.5px;
+  font-style: italic;
+  line-height: 1.6;
+}
+
+.empty-row {
+  padding: 12px 2px;
+  color: var(--ink-3);
+  font-size: 12.5px;
+  font-style: italic;
+}
+
+.muted {
+  color: var(--ink-3);
+}
+
+.sm {
+  font-size: 12px;
+}
+
+/* --------------------------------------------------------------------------
+   Cards
+   -------------------------------------------------------------------------- */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border: var(--outline) solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--card);
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.card-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 550;
+  letter-spacing: -0.01em;
+}
+
+.card-head .muted {
+  padding: 5px 12px;
+  border: var(--outline) solid var(--line-strong);
+  border-radius: var(--r-pill);
+  font-size: 11.5px;
+  font-style: normal;
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------------------
+   Dropzone
+   -------------------------------------------------------------------------- */
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 150px;
+  padding: 22px 18px;
+  border: var(--outline) dashed var(--line-strong);
+  border-radius: var(--r-card);
+  background: var(--card-2);
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.dropzone:hover,
+.dropzone:focus-visible {
+  border-color: var(--ink);
+}
+
+.dropzone.dragover {
+  border-color: var(--ink);
+  border-style: solid;
+  background: var(--accent-soft);
+}
+
+/* Small outlined mark instead of a solid colour block. */
+.dz-icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: var(--outline) solid var(--ink);
+  border-radius: var(--r-pill);
+  color: var(--ink);
+  background: transparent;
+}
+
+.dz-icon svg {
+  width: 17px;
+  height: 17px;
+}
+
+.dz-title {
+  margin: 4px 0 0;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.dz-sub {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.file-chosen {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: var(--outline) solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--card-2);
+}
+
+.file-chosen strong {
+  font-weight: 500;
+}
+
+/* --------------------------------------------------------------------------
+   Peer list
+   -------------------------------------------------------------------------- */
+
+.peer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.peer {
+  display: grid;
+  grid-template-columns: 34px 1fr auto;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 11px;
+  border: var(--outline) solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--card-2);
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.peer:hover {
+  border-color: var(--line-strong);
+}
+
+.peer.selected {
+  border-color: var(--ink);
+  background: var(--accent-soft);
+}
+
+.peer-avatar {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: var(--outline) solid var(--line-strong);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 550;
+  text-transform: uppercase;
+}
+
+.peer.selected .peer-avatar {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.p-info {
+  min-width: 0;
+}
+
+.p-name {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.p-addr {
+  color: var(--ink-3);
+  font-size: 11.5px;
+  font-family: var(--font-mono);
+}
+
+.src-tag {
+  padding: 4px 10px;
+  border: var(--outline) solid var(--line-strong);
+  border-radius: var(--r-pill);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-style: italic;
+  white-space: nowrap;
+}
+
+.src-tag.blocked {
+  border-color: var(--danger);
+  color: var(--danger);
+  cursor: help;
+}
+
+.device-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+/* --------------------------------------------------------------------------
+   Buttons + fields
+   -------------------------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 16px;
+  min-height: 36px;
+  border: var(--outline) solid var(--line-strong);
+  border-radius: var(--r-control);
+  background: transparent;
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 450;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, transform 90ms ease,
+    box-shadow 90ms ease;
+}
+
+.btn:hover {
+  border-color: var(--ink);
+}
+
+.btn:active {
+  transform: translate(1px, 1px);
+}
+
+/* Secondary / quiet actions stay hairline. */
+.btn.ghost {
+  border-color: var(--line);
+  color: var(--ink-2);
+}
+
+.btn.ghost:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+/* Primary: hairline ink border, paper fill, one hard offset shadow — the
+   reference's "Book a module" button. */
+.btn.dark {
+  border-color: var(--ink);
+  background: var(--card-2);
+  color: var(--ink);
+  font-weight: 550;
+  box-shadow: var(--shadow-hard);
+}
+
+.btn.dark:hover {
+  box-shadow: 2px 2px 0 var(--ink);
+  transform: translate(1px, 1px);
+}
+
+.btn.danger {
+  border-color: var(--danger);
+  background: transparent;
+  color: var(--danger);
+}
+
+.btn.danger:hover {
+  background: var(--danger-soft);
+}
+
+.btn.sm {
+  padding: 5px 11px;
+  min-height: 28px;
+  font-size: 11.5px;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  box-shadow: none;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.accept-all {
+  width: 100%;
+  margin-bottom: 10px;
+}
+
+/* Fields: hairline outlined, softly filled, rounded — no underlines. */
+input[type="text"],
+input[type="number"],
+select {
+  width: 100%;
+  padding: 8px 11px;
+  min-height: 36px;
+  border: var(--outline) solid var(--line-strong);
+  border-radius: var(--r-control);
+  background: var(--card-2);
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 450;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus,
+select:focus {
+  outline: none;
+  border-color: var(--ink);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px 20px;
+}
+
+.form-grid label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-style: italic;
+}
+
+.input-row,
+.manual-row,
+.save-row,
+.send-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.manual-row input,
+.send-row input {
+  flex: 1;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--ink);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.check input[type="checkbox"] {
+  appearance: none;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  border: var(--outline) solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--card-2);
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.check input[type="checkbox"]:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: inset 0 0 0 2px var(--card-2);
+}
+
+.check input[type="checkbox"]:hover {
+  border-color: var(--ink);
+}
+
+.settings-hint {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-style: italic;
+  line-height: 1.6;
+}
+
+/* --------------------------------------------------------------------------
+   Transfers
+   -------------------------------------------------------------------------- */
+
+.transfer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.transfer-list:empty {
+  display: none;
+}
+
+.transfer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 13px 14px;
+  border: var(--outline) solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--card-2);
+}
+
+/* A batch (folder / multi-file send): one row, one decision. */
+.transfer.batch {
+  border-left: 3px solid var(--ink);
+}
+
+.batch-names {
+  color: var(--ink-3);
+  font-size: 11.5px;
+  font-style: italic;
+}
+
+.t-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.t-file {
+  font-size: 13px;
+  font-weight: 500;
+  word-break: break-word;
+}
+
+.t-meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 3px;
+  color: var(--ink-3);
+  font-size: 11.5px;
+}
+
+.t-status {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border: var(--outline) solid var(--line-strong);
+  border-radius: var(--r-pill);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-style: italic;
+  white-space: nowrap;
+}
+
+.status-transferring .t-status,
+.status-completed .t-status,
+.status-accepted .t-status {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.status-failed .t-status,
+.status-cancelled .t-status,
+.status-rejected .t-status {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.t-err {
+  margin-top: 6px;
+  color: var(--danger);
+  font-size: 11.5px;
+}
+
+.saved-path {
+  color: var(--ink-3);
+  font-size: 11.5px;
+  font-style: italic;
+  word-break: break-all;
+}
+
+.t-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.progress {
+  height: 6px;
+  margin-top: 2px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--line);
+  overflow: hidden;
+}
+
+.progress > div {
+  height: 100%;
+  background: var(--ink);
+  transition: width 200ms ease;
+}
+
+.pct {
+  margin-top: 5px;
+  color: var(--ink-3);
+  font-size: 11.5px;
+}
+
+.dir-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: var(--outline) solid var(--line-strong);
+  border-radius: 9px;
+  font-size: 13px;
+}
+
+/* --------------------------------------------------------------------------
+   Settings
+   -------------------------------------------------------------------------- */
+
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.info-grid > div {
+  padding: 10px 12px;
+  border: var(--outline) solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--card-2);
+}
+
+.info-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.info-grid .muted {
+  font-size: 11.5px;
+  font-style: italic;
+}
+
+.info-grid span:not(.muted) {
+  font-size: 12.5px;
+  font-weight: 500;
+  word-break: break-all;
+}
+
+/* Places column in the folder picker. */
+.picker-places {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border: var(--outline) solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--card-2);
+  overflow: auto;
+  max-height: 46vh;
+}
+
+/* --------------------------------------------------------------------------
+   Folder picker (<dialog>, opened with showModal)
+   -------------------------------------------------------------------------- */
+
+.picker {
+  width: min(720px, calc(100vw - 40px));
+  max-width: min(720px, calc(100vw - 40px));
+  max-height: calc(100vh - 56px);
+  padding: 0;
+  border: var(--outline) solid var(--line);
+  border-radius: 18px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-soft);
+  overflow: hidden;
+}
+
+/* The dimming belongs to the dialog's own backdrop layer. */
+.picker::backdrop {
+  background: rgba(20, 20, 20, 0.35);
+}
+
+.picker-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: calc(100vh - 56px);
+  padding: 18px;
+}
+
+.picker-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  justify-content: space-between;
+  padding-bottom: 12px;
+  border-bottom: var(--outline) solid var(--divider);
+}
+
+.picker-head h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.picker-body {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 14px;
+  min-height: 0;
+}
+
+.picker-places,
+.picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px;
+  border: var(--outline) solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--card-2);
+  overflow: auto;
+  max-height: 34vh;
+}
+
+.picker-main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.picker-path-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.picker-path {
+  padding: 8px 11px;
+  border: var(--outline) solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--card-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.picker-new-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.picker-row,
+.picker-place {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.picker-row:hover,
+.picker-place:hover {
+  background: var(--accent-soft);
+}
+
+.picker-row.active,
+.picker-place.active {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.picker-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: var(--outline) solid var(--divider);
+}
+
+.picker-foot #pickerCurrent {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: italic;
+}
+
+.picker-buttons {
+  display: inline-flex;
+  gap: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* --------------------------------------------------------------------------
+   Bottom navigation (phones)
+   -------------------------------------------------------------------------- */
+
+.bottom-nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 90;
+  display: none;
+  border-top: var(--outline) solid var(--line);
+  background: var(--surface);
+}
+
+.nav-item {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 4px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-style: italic;
+  cursor: pointer;
+}
+
+.nav-item svg {
+  width: 18px;
+  height: 18px;
+}
+
+.nav-item.active {
+  color: var(--ink);
+  font-style: normal;
+}
+
+/* --------------------------------------------------------------------------
+   Toasts
+   -------------------------------------------------------------------------- */
+
+.toasts {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 300;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: min(360px, calc(100vw - 40px));
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 11px 13px;
+  border: var(--outline) solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+  font-size: 12.5px;
+  animation: toast-in 180ms ease;
+}
+
+.toast::before {
+  content: "";
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  margin-top: 5px;
+  border-radius: var(--r-pill);
+  background: var(--ink-3);
+}
+
+.toast.success::before {
+  background: var(--ink);
+}
+
+.toast.error::before {
+  background: var(--danger);
+}
+
+.toast.warn::before {
+  background: var(--ink-2);
+}
+
+.toast.error {
+  border-color: var(--danger);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Focus + motion
+   -------------------------------------------------------------------------- */
+
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Phones
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 760px) {
+  body {
+    padding: 12px 12px 92px;
+  }
+
+  .shell {
+    gap: 14px;
+    padding: 14px;
+    border-radius: 16px;
+  }
+
+  .topbar {
+    gap: 10px;
+    padding-bottom: 12px;
+  }
+
+  .tabs {
+    display: none;
+  }
+
+  .topbar-right {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .me {
+    flex: 1;
+    max-width: none;
+  }
+
+  .grid-two,
+  .form-grid,
+  .info-grid,
+  .picker-main {
+    grid-template-columns: 1fr;
+  }
+
+  .bottom-nav {
+    display: flex;
+  }
+
+  .toasts {
+    right: 12px;
+    left: 12px;
+    bottom: 84px;
+    max-width: none;
+  }
+}
