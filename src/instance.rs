@@ -127,6 +127,10 @@ pub fn acquire(dir: Option<&Path>) -> Result<Option<InstanceLock>> {
 /// not report a build marker at all, are detected.
 pub fn remote_build(port: u16) -> Option<String> {
     use std::io::{Read, Write};
+    /// `/api/info` is a few hundred bytes; never buffer more than this, in case
+    /// something other than LanDrop is listening on that port.
+    const MAX_BODY: u64 = 8 * 1024;
+
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let mut stream =
         std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(400)).ok()?;
@@ -135,7 +139,7 @@ pub fn remote_build(port: u16) -> Option<String> {
         .write_all(b"GET /api/info HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
         .ok()?;
     let mut body = String::new();
-    let _ = stream.read_to_string(&mut body);
+    let _ = stream.take(MAX_BODY).read_to_string(&mut body);
     parse_build(&body)
 }
 

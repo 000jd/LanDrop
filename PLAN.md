@@ -276,3 +276,59 @@ also appears in the mobile bottom nav.
 
 Phases: plan → theme rewrite (css/html/app.js) → screenshots (light/dark/receive/settings/
 mobile with bottom nav) → desktop bundles + phone APK → docs + commit → final checks.
+
+## Round 7: third-party review — verified, then fixed (planned)
+
+An external review listed 20 findings plus 15 suggestions. Every item was checked
+against the code before acting; three claims did not survive that check.
+
+### Verdicts
+
+| # | Finding | Verdict | Action |
+|---|---|---|---|
+| 1 | MSRV: `Ipv4Addr::is_broadcast` needs Rust 1.79 | **wrong claim, right conclusion** — the local `rust-src` shows `#[stable(since = "1.7.0", feature = "ip_17")]`, so nothing in our code needs 1.79. But the declared MSRV was wrong anyway: a locked dependency (`idna_adapter`, via `url`) uses **edition 2024**, which needs **1.85+**, and the committed `Cargo.lock` was version 4 (older cargo cannot even read it) | declare and verify 1.85: `rust-version` in both manifests, README, and a CI job pinned to it |
+| 2 | `parse_peer_addr` accepts loopback although the comment claims SSRF protection | valid | allow loopback **only for requests from this machine** (keeps the two-instance dev flow and tests working), reject it from the LAN; fix the comment; tests |
+| 3 | subnet-directed broadcast (`192.168.1.255`) accepted | valid | reject a `.255` last octet with a comment explaining the /24 heuristic |
+| 4 | `LANADROP_BUILD_ID` typo | valid | rename to `LANDROP_BUILD_ID` |
+| 5 | ephemeral port persistence wasted | **wrong** as stated (the persisted port *is* used on the next run) — but it exposed a **real** bug: CLI overrides live in `state.cfg`, so a later settings save writes `--port/--downloads/--name` into the config file, contradicting "this run only" | keep a separate on-disk config image; UI changes update it, run-only overrides do not; integration test |
+| 6 | mDNS: no unregister when advertise fails | mostly moot; defensive improvement | on failure, drop the cached fullname and unregister before the next attempt |
+| 7 | UDP beacon every 2 s forever | valid (politeness) | adaptive: 2 s while the peer set is settling/changing, back off to 20 s when stable, speed up on change |
+| 8 | `validate_dir` allows `/etc` etc. | valid | refuse system directories (and anything under them), keep home / downloads / removable media / tmp |
+| 9 | stale mDNS registration after SIGKILL (60 s TTL) | valid, documentation gap | document in README troubleshooting (standard mDNS behaviour) |
+| 10 | reqwest redirect policy / certs | no issue (reviewer agrees) | — |
+| 11 | SSE channel capacity 256 | valid, cheap | raise to 1024 |
+| 12 | `remote_build` unbounded `read_to_string` | valid | cap at 8 KiB |
+| 13 | temp file name could escape the dir | no issue (name is sanitized first) | — |
+| 14 | notification body passed positionally to `gdbus` | valid (option injection, not shell) | pass positionals after `--` and strip control characters |
+| 15 | autostart `Exec=` quoting | valid | escape per the Desktop Entry spec |
+| 16 | token compare short-circuits when no token is set | valid (micro) | compare against a fixed dummy so the path is constant-time too |
+| 17 | 400 for "too many manual peers" | valid | use 403 |
+| 18 | mDNS hostname collisions | no issue (12 hex chars) | — |
+| 19 | silent offer when no notification tool exists | valid | log a warning when no tool is available |
+| 20 | `Cargo.lock` committed without `[patch]` | no issue | — |
+
+### Also implemented (from the suggestion list)
+
+- `--log-file <path>` for daemonised runs.
+- Desktop honours `LANDROP_CONFIG_DIR`, so the production binary can be smoke
+  tested in a sandbox without touching the real config.
+- CI workflow: fmt + clippy + tests (Linux), tests (Windows, macOS), desktop
+  `cargo check` (Linux, with Tauri deps), MSRV job pinned to the declared floor.
+- `docs/INSTANCE_MODEL.md`: why `tauri-plugin-single-instance` is deliberately
+  absent and how the build-aware instance logic works.
+- Adversarial unit tests for the sanitizer and the address parser.
+
+### Deferred, with reasons
+
+- **Transfer resume (HTTP Range)**: the biggest win for flaky Wi-Fi, but it is a
+  protocol change (offer/resume negotiation, partial-file naming, checksum
+  over a window) and deserves its own round.
+- **Cancel notice to the sender**: the receiver already drops the socket, which
+  the sender fails on immediately; an explicit "cancelled" status only pays off
+  once resume exists.
+- **Transfer history in SQLite/JSON**: stays on the roadmap.
+- **`cargo-fuzz` / proptest harness**: the adversarial unit tests cover the
+  known-bad inputs; a fuzzing target is worth adding when the protocol settles.
+- **Replacing the hand-rolled HTTP probe in `instance.rs` with reqwest**: reqwest
+  would become a runtime dependency of the core binary (hyper + TLS) just to read
+  one JSON field — the 15 lines stay, now with a bounded read.

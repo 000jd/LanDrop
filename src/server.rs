@@ -22,7 +22,12 @@ pub mod handlers;
 /// Shared application state handed to every handler.
 #[derive(Clone)]
 pub struct AppState {
+    /// The config this run actually uses (includes run-only CLI overrides).
     pub cfg: Arc<RwLock<Config>>,
+    /// The config as it exists **on disk**. Run-only overrides (`--port`,
+    /// `--downloads`, `--name`) must never be written back, so persistence
+    /// writes this copy; settings changed in the UI update both.
+    pub disk_cfg: Arc<RwLock<Config>>,
     pub peers: Arc<PeerStore>,
     pub transfers: TransferManager,
     pub events: EventBus,
@@ -35,7 +40,8 @@ impl AppState {
     pub fn new(cfg: Config, peers: Arc<PeerStore>, transfers: TransferManager) -> Self {
         let events = transfers.events.clone();
         Self {
-            cfg: Arc::new(RwLock::new(cfg)),
+            cfg: Arc::new(RwLock::new(cfg.clone())),
+            disk_cfg: Arc::new(RwLock::new(cfg)),
             peers,
             transfers,
             events,

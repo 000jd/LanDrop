@@ -60,6 +60,17 @@ fn init_tracing() {
 
 /// Per-platform node options: where the config lives and where files land.
 fn node_options(app: &tauri::AppHandle) -> Result<NodeOptions> {
+    // `LANDROP_CONFIG_DIR` wins on every platform: it keeps the shipped binary
+    // smoke-testable in a sandbox (and lets two copies run side by side)
+    // without touching the real config.
+    if let Some(dir) = std::env::var_os("LANDROP_CONFIG_DIR") {
+        let dir = PathBuf::from(dir);
+        info!("LANDROP_CONFIG_DIR={} (sandboxed config)", dir.display());
+        return Ok(NodeOptions {
+            config_dir: Some(dir.to_string_lossy().into_owned()),
+            ..NodeOptions::default()
+        });
+    }
     #[cfg(mobile)]
     {
         let paths = app.path();

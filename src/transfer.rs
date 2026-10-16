@@ -520,11 +520,16 @@ impl TransferManager {
         let Some(t) = map.get_mut(id) else {
             return false;
         };
-        let ok = t
-            .upload_token
-            .as_deref()
-            .map(|expected| constant_time_eq(expected.as_bytes(), token.as_bytes()))
-            .unwrap_or(false);
+        let ok = match t.upload_token.as_deref() {
+            Some(expected) => constant_time_eq(expected.as_bytes(), token.as_bytes()),
+            // No token set: this request can never succeed, but still run a
+            // comparison so the "already used / never issued" case is not
+            // distinguishable by timing on the first call.
+            None => {
+                let _ = constant_time_eq(&[0u8; 32], token.as_bytes());
+                false
+            }
+        };
         if ok {
             t.upload_token = None;
         }

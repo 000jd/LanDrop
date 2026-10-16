@@ -35,8 +35,13 @@ const MULTICAST_GROUP: Ipv4Addr = Ipv4Addr::new(239, 255, 42, 21);
 /// Beacon magic so we ignore unrelated UDP on the port.
 const BEACON_MAGIC: &[u8] = b"LD1";
 
-/// How often we shout our identity on the LAN.
-const BEACON_INTERVAL: Duration = Duration::from_secs(2);
+/// Beacon cadence: fast while the LAN is settling or while devices come and go,
+/// slow once the peer set has been stable for a while (so a crowded office
+/// network is not flooded every 2 s forever).
+const FAST_BEACON: Duration = Duration::from_secs(2);
+const SLOW_BEACON: Duration = Duration::from_secs(20);
+/// How long the peer set must be unchanged before backing off.
+const STABLE_AFTER: Duration = Duration::from_secs(60);
 
 /// Full-address length limit for mdns-sd (name + addresses must fit a packet).
 const MAX_MDNS_ADDR: usize = 1024;
@@ -103,6 +108,12 @@ async fn run_mdns(
 
         if let Err(e) = advertise(&daemon, &id, &name, &instance, http_port) {
             warn!("mDNS advertise failed: {e}");
+            // Drop whatever was registered before, so the next attempt starts
+            // from a clean slate instead of leaving a half-registered service
+            // (e.g. after a name collision) behind.
+            if let Some(prev) = last_fullname.take() {
+                let _ = daemon.unregister(&prev);
+            }
         } else {
             last_fullname = Some(fullname);
             info!("advertising as {name} ({id}) on port {http_port}");
@@ -392,15 +403,25 @@ async fn run_udp_beacon(
     info!("UDP discovery listening on :{DISCOVERY_PORT}");
 
     let mut buf = [0u8; 1500];
-    let mut tick = tokio::time::interval(BEACON_INTERVAL);
+    // Decision clock: once per second we check whether the beacon is due. The
+    // beacon itself is rate-limited adaptively (fast while the LAN settles,
+    // slow once the peer set is stable).
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    let mut next_beacon = tokio::time::Instant::now();
+    let mut last_peer_count = usize::MAX;
+    let mut peer_set_changed_at = tokio::time::Instant::now();
     loop {
         tokio::select! {
             _ = shutdown.changed() => return,
             _ = tick.tick() => {
+                if tokio::time::Instant::now() < next_beacon {
+                    continue;
+                }
                 let id = my_id.read().await.clone();
                 let name = my_name.read().await.clone();
                 let http_port = *port.read().await;
                 if id.is_empty() || http_port == 0 {
+                    next_beacon = tokio::time::Instant::now() + FAST_BEACON;
                     continue;
                 }
                 let payload = encode_beacon(&Beacon {
@@ -412,6 +433,14 @@ async fn run_udp_beacon(
                 for dest in beacon_destinations() {
                     let _ = sock.send_to(&payload, dest).await;
                 }
+                let peers = store.count().await;
+                if peers != last_peer_count {
+                    last_peer_count = peers;
+                    peer_set_changed_at = tokio::time::Instant::now();
+                }
+                let stable = peers > 0 && peer_set_changed_at.elapsed() >= STABLE_AFTER;
+                next_beacon = tokio::time::Instant::now()
+                    + if stable { SLOW_BEACON } else { FAST_BEACON };
             }
             recv = sock.recv_from(&mut buf) => {
                 match recv {

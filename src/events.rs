@@ -12,7 +12,11 @@ use tokio::sync::{broadcast, watch};
 use tracing::debug;
 
 /// Capacity of the event channel; SSE clients that are too slow are dropped.
-const CHANNEL_CAPACITY: usize = 256;
+///
+/// Progress is throttled per transfer, but a few transfers plus peer updates
+/// can easily produce dozens of events per second, so leave plenty of room
+/// before a client is considered lagged.
+const CHANNEL_CAPACITY: usize = 1024;
 
 /// A single event on the bus: a name plus a JSON payload.
 #[derive(Debug, Clone)]

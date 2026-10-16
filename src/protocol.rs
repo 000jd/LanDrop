@@ -205,6 +205,22 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_handles_adversarial_names() {
+        // Bidi overrides are dropped (they can disguise the real extension),
+        // control characters are stripped, trailing dots/spaces go away.
+        assert_eq!(sanitize_filename("photo\u{202E}gpj.exe"), "photogpj.exe");
+        assert_eq!(sanitize_filename("a\u{0}b.txt"), "ab.txt");
+        assert_eq!(sanitize_filename("ok\u{7}.txt"), "ok.txt");
+        assert_eq!(sanitize_filename("trailing...  "), "trailing");
+        assert_eq!(sanitize_filename("/"), "unnamed-file");
+        // Long names are capped without splitting a code point.
+        let long = "é".repeat(MAX_FILENAME_CHARS * 2);
+        let out = sanitize_filename(&long);
+        assert_eq!(out.chars().count(), MAX_FILENAME_CHARS);
+        assert!(out.chars().all(|c| c == 'é'));
+    }
+
+    #[test]
     fn sanitize_keeps_plain_names_and_unicode() {
         assert_eq!(sanitize_filename("report.pdf"), "report.pdf");
         assert_eq!(sanitize_filename("héllo wörld.txt"), "héllo wörld.txt");

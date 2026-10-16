@@ -19,7 +19,7 @@
 ///
 /// Reported by `/api/info` and shown in Settings, and used to refuse attaching
 /// to a running node built from different sources.
-pub const BUILD_ID: &str = match option_env!("LANADROP_BUILD_ID") {
+pub const BUILD_ID: &str = match option_env!("LANDROP_BUILD_ID") {
     Some(v) => v,
     None => "0",
 };

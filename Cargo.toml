@@ -5,6 +5,11 @@ members = ["desktop"]
 name = "landrop"
 version = "0.1.0"
 edition = "2021"
+# Practical floor, measured: locked dependencies (icu_* via url, idna_adapter)
+# need 1.86; the hand-written code itself compiles on much older toolchains.
+# Verified locally with `cargo +1.86.0 check --locked --all-targets` and by the
+# `msrv` job in CI.
+rust-version = "1.86"
 description = "LanDrop — LAN file sharing with no cloud and no accounts"
 license = "MIT"
 build = "build.rs"

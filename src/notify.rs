@@ -13,6 +13,8 @@
 use std::path::PathBuf;
 #[cfg(target_os = "linux")]
 use std::process::Command;
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
 
 use crate::transfer::TransferManager;
 
@@ -83,6 +85,37 @@ pub fn notify(title: &str, body: &str) {
 // Progress notifications
 // ---------------------------------------------------------------------------
 
+/// Strip control characters from text handed to external tools: they carry no
+/// meaning in a notification or dialog, and a newline or NUL can break or
+/// truncate the call.
+#[cfg(target_os = "linux")]
+fn clean_text(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
+}
+
+/// Say it once instead of silently dropping every notification.
+#[cfg(target_os = "linux")]
+fn warn_missing_notify_tool() {
+    static WARNED: OnceLock<()> = OnceLock::new();
+    if WARNED.set(()).is_ok() {
+        tracing::warn!(
+            "no progress-capable notification tool found (gdbus / notify-send with hints); \
+             falling back to plain notifications, if any tool exists at all"
+        );
+    }
+}
+
+/// Same for the accept/reject dialog tools.
+#[cfg(target_os = "linux")]
+fn warn_missing_dialog_tool() {
+    static WARNED: OnceLock<()> = OnceLock::new();
+    if WARNED.set(()).is_ok() {
+        tracing::warn!(
+            "no dialog tool found (zenity / kdialog); incoming offers are shown in the app UI only"
+        );
+    }
+}
+
 /// Arguments for the `gdbus` Notify call that shows a progress bar.
 #[cfg(target_os = "linux")]
 fn gdbus_notify_args(
@@ -102,11 +135,14 @@ fn gdbus_notify_args(
         "/org/freedesktop/Notifications".into(),
         "--method".into(),
         "org.freedesktop.Notifications.Notify".into(),
+        // `--` ends option parsing, so a title or body that begins with `-`
+        // cannot be mistaken for a gdbus flag.
+        "--".into(),
         "LanDrop".into(),
         replaces.to_string(),
         icon.to_string(),
-        title.to_string(),
-        body.to_string(),
+        clean_text(title),
+        clean_text(body),
         "[]".into(),                               // actions
         format!("{{'value': <int32 {percent}>}}"), // progress hint
         timeout_ms.to_string(),
@@ -173,6 +209,8 @@ pub fn progress(transfer_id: &str, title: &str, body: &str, percent: u8, finishe
         // No replace support: only show the start and the final state, so the
         // notification list does not fill with stale percentages.
         if percent == 0 || finished {
+            let title = clean_text(title);
+            let body = clean_text(body);
             let mut cmd = Command::new("notify-send");
             cmd.args([
                 "-a",
@@ -183,13 +221,19 @@ pub fn progress(transfer_id: &str, title: &str, body: &str, percent: u8, finishe
                 &format!("int:value:{percent}"),
                 "-t",
                 if finished { "5000" } else { "0" },
-                title,
-                body,
+                "--",
+                &title,
+                &body,
             ]);
             let _ = crate::util::spawn_detached(&mut cmd);
         }
-    } else if finished {
-        notify(title, body);
+    } else {
+        // Neither gdbus nor a hint-capable notify-send: progress cannot be
+        // shown live, so only the plain fallback is left.
+        warn_missing_notify_tool();
+        if finished {
+            notify(title, body);
+        }
     }
 }
 
@@ -261,6 +305,7 @@ fn ask_user(sender: &str, filename: &str) -> Decision {
     if let Some(d) = kdialog_yesno(&body) {
         return d;
     }
+    warn_missing_dialog_tool();
     Decision::Ignored
 }
 

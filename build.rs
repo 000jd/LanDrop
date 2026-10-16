@@ -16,7 +16,7 @@ fn main() {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    println!("cargo:rustc-env=LANADROP_BUILD_ID={stamp}");
+    println!("cargo:rustc-env=LANDROP_BUILD_ID={stamp}");
 
     // Keep the embedded UI logo in sync with the canonical SVG mark. Only
     // write when the content actually differs, so plain builds never dirty

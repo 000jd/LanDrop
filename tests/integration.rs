@@ -862,6 +862,67 @@ async fn accept_with_relative_save_dir_is_rejected() {
 }
 
 #[tokio::test]
+async fn accept_into_a_system_directory_is_rejected() {
+    // Accepting a file into /etc (or another system path) is never intended,
+    // even when the account could write there.
+    let dir = tempfile::tempdir().unwrap();
+    let (state, port, _) = instance("bob", dir.path().join("dl")).await;
+    let base = format!("http://127.0.0.1:{port}");
+
+    let tid = offer_pending(&base, "passwd", 5).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/api/transfers/{tid}/accept"))
+        .json(&serde_json::json!({ "save_dir": "/etc" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    assert_eq!(state.transfers.get(&tid).await.unwrap().status, "waiting");
+}
+
+#[tokio::test]
+async fn settings_save_does_not_persist_run_only_overrides() {
+    // A settings save later in the run must not leak the CLI overrides
+    // (`--port` / `--name`): they apply to that run only.
+    let dir = tempfile::tempdir().unwrap();
+    let node = landrop::app::start_node(landrop::app::NodeOptions {
+        port: Some(0), // ephemeral, this run only
+        downloads: Some(dir.path().join("dl").to_string_lossy().into_owned()),
+        name: Some("node-test".into()),
+        no_mdns: true,
+        port_scan: false,
+        config_dir: Some(dir.path().to_string_lossy().into_owned()),
+        ..landrop::app::NodeOptions::default()
+    })
+    .await
+    .unwrap();
+
+    let url = format!("http://127.0.0.1:{}", node.addr.port());
+    let resp = reqwest::Client::new()
+        .post(format!("{url}/api/settings"))
+        .json(&serde_json::json!({ "auto_accept": true }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "settings save should succeed");
+
+    let saved = landrop::config::Config::load_from(&dir.path().join("config.toml")).unwrap();
+    assert!(saved.auto_accept, "the requested setting is persisted");
+    assert_eq!(
+        saved.port,
+        landrop::config::DEFAULT_PORT,
+        "run-only --port stays out of the config file"
+    );
+    assert_ne!(
+        saved.name, "node-test",
+        "run-only --name stays out of the file"
+    );
+
+    node.shutdown();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), node.wait_for_shutdown()).await;
+}
+
+#[tokio::test]
 async fn folder_listing_and_mkdir() {
     let dir = tempfile::tempdir().unwrap();
     let dl = dir.path().join("dl");

@@ -21,7 +21,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
-use crate::peers::{parse_peer_addr, Peer};
+use crate::peers::{parse_peer_addr_with, Peer};
 use crate::protocol::{AcceptInfo, Offer, TOKEN_HEADER, UPLOAD_TOKEN_HEADER};
 use crate::server::AppState;
 use crate::transfer::sender::spawn_send;
@@ -170,6 +170,7 @@ pub async fn api_peers(State(state): State<AppState>) -> Response {
 /// Add a manual peer by `ip:port` (persisted in config).
 pub async fn api_add_manual_peer(
     State(state): State<AppState>,
+    ConnectInfo(request_addr): ConnectInfo<SocketAddr>,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
     let address = body["address"].as_str().unwrap_or("").trim().to_string();
@@ -177,7 +178,9 @@ pub async fn api_add_manual_peer(
         return err(StatusCode::BAD_REQUEST, "address is required");
     }
     let default_port = *state.transfers.my_port.read().await;
-    let socket = match parse_peer_addr(&address, default_port) {
+    // Loopback is only a valid peer when the request came from this machine
+    // (the local UI, tests, the two-instance dev script).
+    let socket = match parse_peer_addr_with(&address, default_port, is_local_peer(&request_addr)) {
         Ok(s) => s,
         Err(e) => return err(StatusCode::BAD_REQUEST, e.to_string()),
     };
@@ -200,12 +203,15 @@ pub async fn api_add_manual_peer(
         if !cfg.manual_peers.contains(&addr_str) {
             if cfg.manual_peers.len() >= MAX_MANUAL_PEERS {
                 return err(
-                    StatusCode::BAD_REQUEST,
+                    StatusCode::FORBIDDEN,
                     format!("too many manual peers (max {MAX_MANUAL_PEERS})"),
                 );
             }
             cfg.manual_peers.push(addr_str.clone());
         }
+        // Manual peers are never a run-only override, so the on-disk copy
+        // mirrors the list as-is.
+        state.disk_cfg.write().await.manual_peers = cfg.manual_peers.clone();
     }
     if let Err(e) = persist_config(&state).await {
         tracing::warn!("failed to persist config: {e}");
@@ -229,7 +235,11 @@ pub async fn api_transfers(State(state): State<AppState>) -> Response {
 ///
 /// The uploaded file is streamed to a private staging file while hashing it —
 /// never buffered in memory — and removed once the transfer finishes.
-pub async fn api_send(State(state): State<AppState>, mut multipart: Multipart) -> Response {
+pub async fn api_send(
+    State(state): State<AppState>,
+    ConnectInfo(request_addr): ConnectInfo<SocketAddr>,
+    mut multipart: Multipart,
+) -> Response {
     let mut target: Option<String> = None;
     let mut file_meta: Option<(String, u64, PathBuf, Option<String>)> = None; // (name, size, staged, sha)
 
@@ -366,19 +376,23 @@ pub async fn api_send(State(state): State<AppState>, mut multipart: Multipart) -
     // Resolve the target: peer id or manual address.
     let peer = match state.peers.find(&target).await {
         Some(p) => p,
-        None => match parse_peer_addr(&target, *state.transfers.my_port.read().await) {
-            Ok(s) => Peer {
-                id: format!("manual-{}", s),
-                name: s.ip().to_string(),
-                addr: s.ip().to_string(),
-                port: s.port(),
-                source: "manual".into(),
-            },
-            Err(e) => {
-                cleanup_file(&staged).await;
-                return err(StatusCode::BAD_REQUEST, format!("unknown target: {e}"));
+        None => {
+            let my_port = *state.transfers.my_port.read().await;
+            let allow_loopback = is_local_peer(&request_addr);
+            match parse_peer_addr_with(&target, my_port, allow_loopback) {
+                Ok(s) => Peer {
+                    id: format!("manual-{}", s),
+                    name: s.ip().to_string(),
+                    addr: s.ip().to_string(),
+                    port: s.port(),
+                    source: "manual".into(),
+                },
+                Err(e) => {
+                    cleanup_file(&staged).await;
+                    return err(StatusCode::BAD_REQUEST, format!("unknown target: {e}"));
+                }
             }
-        },
+        }
     };
 
     let id = match spawn_send(&state.transfers, peer, filename, size, sha, staged.clone()).await {
@@ -569,6 +583,35 @@ pub async fn api_save_settings(
         new_downloads = cfg.downloads.clone();
         new_auto_accept = cfg.auto_accept;
         new_ask_save_path = cfg.ask_save_path;
+    }
+    // Mirror only the fields this request actually asked for into the on-disk
+    // copy: everything else keeps whatever the config file already had, so a
+    // run-only override can never be persisted by an unrelated settings save.
+    {
+        let cfg = state.cfg.read().await;
+        let mut disk = state.disk_cfg.write().await;
+        if body.name.as_deref().is_some_and(|n| !n.trim().is_empty()) {
+            disk.name = cfg.name.clone();
+        }
+        if body.port.is_some_and(|p| p > 0) {
+            disk.port = cfg.port;
+        }
+        if body
+            .downloads
+            .as_deref()
+            .is_some_and(|d| !d.trim().is_empty())
+        {
+            disk.downloads = cfg.downloads.clone();
+        }
+        if let Some(a) = body.auto_accept {
+            disk.auto_accept = a;
+        }
+        if let Some(a) = body.ask_save_path {
+            disk.ask_save_path = a;
+        }
+        if let Some(on) = body.start_on_login {
+            disk.start_on_login = on;
+        }
     }
     // Propagate to live state. Port changes apply on restart — do not
     // advertise a port we are not bound to.
@@ -906,7 +949,32 @@ fn create_subdir(parent: &str, name: &str) -> Result<String, String> {
     Ok(target.to_string_lossy().into_owned())
 }
 
-/// Validate a user-chosen save folder (absolute, existing, canonicalized).
+/// Directories that are never a sensible download target: accepting a file into
+/// a system path is a mistake (or worse) even when the account happens to have
+/// write access there.
+const FORBIDDEN_DIRS: &[&str] = &[
+    "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/boot", "/sys",
+    "/proc", "/dev", "/run", "/var", "/snap",
+];
+
+/// Roots that stay usable even though they live under a refused path (removable
+/// media and temporary folders).
+const ALLOWED_UNDER: &[&str] = &["/run/media", "/media", "/mnt", "/tmp", "/var/tmp"];
+
+/// True for system directories (and anything below them) that the folder picker
+/// must not accept. Best-effort: on Windows the Linux-style prefixes simply
+/// never match.
+fn is_system_dir(path: &std::path::Path) -> bool {
+    let s = path.to_string_lossy();
+    let under = |p: &str| s == p || s.starts_with(&format!("{p}/"));
+    if ALLOWED_UNDER.iter().any(|p| under(p)) {
+        return false;
+    }
+    FORBIDDEN_DIRS.iter().any(|p| under(p))
+}
+
+/// Validate a user-chosen save folder: absolute, existing, a directory, and not
+/// a system path.
 fn validate_dir(raw: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(raw.trim());
     if !path.is_absolute() {
@@ -917,13 +985,23 @@ fn validate_dir(raw: &str) -> Result<PathBuf, String> {
     if !canon.is_dir() {
         return Err(format!("{} is not a directory", canon.display()));
     }
+    if is_system_dir(&canon) {
+        return Err(format!(
+            "{} is a system directory — pick a folder you own",
+            canon.display()
+        ));
+    }
     Ok(canon)
 }
 
 /// Persist the current config next to the node's config file (honours a
 /// custom `--config-dir`, falling back to the default location).
+///
+/// Writes [`AppState::disk_cfg`], not `cfg`: run-only CLI overrides
+/// (`--port/--downloads/--name`) stay out of the file no matter how often the
+/// settings UI is saved.
 async fn persist_config(state: &AppState) -> Result<(), String> {
-    let snapshot = state.cfg.read().await.clone();
+    let snapshot = state.disk_cfg.read().await.clone();
     let dir = state.config_dir.clone();
     match tokio::task::spawn_blocking(move || match dir {
         Some(dir) => snapshot.save_to(&dir.join(crate::config::CONFIG_FILE_NAME)),
@@ -1006,4 +1084,29 @@ fn is_local_peer(addr: &SocketAddr) -> bool {
 /// JSON error response.
 fn err(status: StatusCode, msg: impl Into<String>) -> Response {
     (status, Json(json!({ "error": msg.into() }))).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_system_dir;
+    use std::path::Path;
+
+    #[test]
+    fn system_directories_are_refused_but_user_folders_are_not() {
+        for p in [
+            "/etc", "/etc/ssl", "/usr/bin", "/boot", "/var/lib", "/dev/shm",
+        ] {
+            assert!(is_system_dir(Path::new(p)), "{p} should be refused");
+        }
+        for p in [
+            "/home/me/Downloads/LanDrop",
+            "/tmp/landrop-test",
+            "/var/tmp/landrop",
+            "/media/usb/stick",
+            "/run/media/me/disk",
+            "/mnt/data",
+        ] {
+            assert!(!is_system_dir(Path::new(p)), "{p} should be allowed");
+        }
+    }
 }

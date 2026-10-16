@@ -60,6 +60,12 @@ impl PeerStore {
         }
     }
 
+    /// Number of peers currently known (discovered + manual). Used by the
+    /// beacon to notice when the LAN settles down or someone joins/leaves.
+    pub async fn count(&self) -> usize {
+        self.inner.read().await.by_id.len()
+    }
+
     /// Insert or refresh a peer. Re-announcements refresh `last_seen` and
     /// update name / id / address when the device moved or TXT records arrived.
     /// Returns true when this was a new (or visibly changed) peer.
@@ -203,9 +209,24 @@ pub fn is_self(peer: &Peer, my_id: &str, my_port: u16, my_ips: &[String]) -> boo
 /// `[fe80::1]:8420` into a `SocketAddr` with the default port applied when
 /// missing.
 ///
-/// Refuses targets that only make sense as SSRF material: unspecified,
-/// multicast, broadcast and link-local addresses (e.g. cloud metadata).
+/// Strict: refuses everything that is not a host we could talk to — unspecified,
+/// multicast, broadcast, subnet-directed broadcast (`x.y.z.255`, the broadcast of
+/// the usual /24) and link-local addresses (cloud metadata). Loopback is refused
+/// as well; call [`parse_peer_addr_with`] when the request came from this
+/// machine (the local UI, tests, the two-instance dev script).
 pub fn parse_peer_addr(input: &str, default_port: u16) -> Result<SocketAddr> {
+    parse_peer_addr_with(input, default_port, false)
+}
+
+/// Like [`parse_peer_addr`], with `allow_loopback` keeping `127.0.0.0/8` (and
+/// `::1`) usable. Only pass `true` for requests that arrived over loopback or
+/// from one of this machine's own addresses — a peer on the LAN must never be
+/// able to point us at itself or at another local service.
+pub fn parse_peer_addr_with(
+    input: &str,
+    default_port: u16,
+    allow_loopback: bool,
+) -> Result<SocketAddr> {
     let input = input.trim();
     if input.is_empty() {
         bail!("empty address");
@@ -238,16 +259,34 @@ pub fn parse_peer_addr(input: &str, default_port: u16) -> Result<SocketAddr> {
         bail!("invalid address '{input}': port 0");
     }
     match addr.ip() {
-        IpAddr::V4(v) if v.is_unspecified() || v.is_multicast() || v.is_broadcast() => {
-            bail!("refusing unsafe target address '{input}'");
+        IpAddr::V4(v) => {
+            if v.is_unspecified() || v.is_multicast() || v.is_broadcast() {
+                bail!("refusing unsafe target address '{input}'");
+            }
+            // `x.y.z.255` is the broadcast address of a /24 — i.e. of almost
+            // every home and office LAN — and never a host we can talk to.
+            if v.octets()[3] == 255 {
+                bail!("refusing broadcast-form address '{input}'");
+            }
+            if v.is_link_local() {
+                bail!("refusing link-local target address '{input}'");
+            }
+            if v.is_loopback() && !allow_loopback {
+                bail!(
+                    "refusing loopback target address '{input}' (only reachable from this machine)"
+                );
+            }
         }
-        IpAddr::V4(v) if v.is_link_local() => {
-            bail!("refusing link-local target address '{input}'");
+        IpAddr::V6(v) => {
+            if v.is_unspecified() || v.is_multicast() || v.is_unicast_link_local() {
+                bail!("refusing unsafe target address '{input}'");
+            }
+            if v.is_loopback() && !allow_loopback {
+                bail!(
+                    "refusing loopback target address '{input}' (only reachable from this machine)"
+                );
+            }
         }
-        IpAddr::V6(v) if v.is_unspecified() || v.is_multicast() || v.is_unicast_link_local() => {
-            bail!("refusing unsafe target address '{input}'");
-        }
-        _ => {}
     }
     Ok(addr)
 }
@@ -386,10 +425,12 @@ mod tests {
 
     #[test]
     fn parse_peer_addr_ipv6() {
-        let a = parse_peer_addr("[::1]:8420", 9999).unwrap();
+        // Bracketed IPv6 parses; loopback needs the explicit opt-in.
+        let a = parse_peer_addr_with("[::1]:8420", 9999, true).unwrap();
         assert_eq!(a.port(), 8420);
-        let b = parse_peer_addr("[::1]", 8420).unwrap();
+        let b = parse_peer_addr_with("[::1]", 8420, true).unwrap();
         assert_eq!(b.port(), 8420);
+        assert!(parse_peer_addr("[::1]:8420", 8420).is_err());
         assert!(parse_peer_addr("fe80::1", 8420).is_err());
         assert!(parse_peer_addr("2001:db8::1", 8420).is_err());
         // Link-local IPv6 is refused even when bracketed.
@@ -402,7 +443,11 @@ mod tests {
         assert!(parse_peer_addr("169.254.169.254:80", 8420).is_err());
         assert!(parse_peer_addr("224.0.0.1:8420", 8420).is_err());
         assert!(parse_peer_addr("255.255.255.255:8420", 8420).is_err());
-        assert!(parse_peer_addr("127.0.0.1:8420", 8420).is_ok());
+        // Subnet-directed broadcast: the broadcast of a /24.
+        assert!(parse_peer_addr("192.168.1.255:8420", 8420).is_err());
+        // Loopback is refused unless the caller says the request is local.
+        assert!(parse_peer_addr("127.0.0.1:8420", 8420).is_err());
+        assert!(parse_peer_addr_with("127.0.0.1:8420", 8420, true).is_ok());
         assert!(parse_peer_addr("192.168.1.5", 8420).is_ok());
     }
 }

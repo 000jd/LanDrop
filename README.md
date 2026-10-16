@@ -69,6 +69,7 @@ make build                    # -> bin/landrop (release)
 ./bin/landrop --open          # ...and open the browser automatically
 ./bin/landrop -p 9000         # custom port
 ./bin/landrop -n living-room  # friendly device name
+./bin/landrop --log-file /tmp/landrop.log   # append logs to a file (daemon use)
 ```
 
 ### Desktop app (Tauri v2)
@@ -113,7 +114,7 @@ no install at all.
 | Sending & receiving | [Features](#features) · [Run on two real machines](#run-on-two-real-machines) |
 | Troubleshooting | [Firewall](#firewall) · [mDNS troubleshooting](#mdns-troubleshooting) · [Known limitations](#known-limitations) |
 | Security & privacy | [Security notes](#security-notes) · [Configuration](#configuration) |
-| Development | [Project layout](#project-layout) · [API](#api-local) · [Wire protocol](#wire-protocol-device--device) |
+| Development | [Project layout](#project-layout) · [API](#api-local) · [Wire protocol](#wire-protocol-device--device) · [Instance model](docs/INSTANCE_MODEL.md) |
 
 ## Features
 
@@ -158,8 +159,11 @@ no install at all.
 
 ## Build
 
-Requires Rust 1.74+ (tested with 1.92). The browser-mode binary needs no system
-dependencies beyond a C toolchain — the UI is embedded, so there is no Node step.
+Requires Rust **1.86+** — measured, not guessed: the locked dependencies need it
+(`icu_*`/`idna_adapter` via `url`). The hand-written code itself compiles on much
+older toolchains. Verified with 1.92 and 1.86 locally and by the `msrv` job in CI.
+The browser-mode binary needs no system dependencies beyond a C toolchain — the UI
+is embedded, so there is no Node step.
 
 ```bash
 make build          # -> bin/landrop (release)
@@ -302,6 +306,12 @@ process is gone. Two things make that visible instead of confusing:
   overrides stripped, length capped), files never overwrite each other, the
   declared size is enforced while streaming, and SHA-256 is verified when the
   sender provides it.
+- Target addresses are checked: unspecified, multicast, broadcast (including the
+  `x.y.z.255` subnet form) and link-local addresses are refused, and loopback is
+  only accepted for requests that come from this machine — a device on the LAN
+  cannot point the app at itself or at another local service.
+- Save folders may not be system directories (`/etc`, `/usr`, `/boot`, `/var`, …);
+  home folders, removable media and temp folders stay allowed.
 - Outgoing files are staged in a private `outbox` directory under the config dir
   (mode 0700) and deleted once the transfer ends; uploads never buffer a whole
   file in memory.
@@ -333,7 +343,9 @@ manual_peers = ["192.168.1.25:8420"]
 > `--port`, `--downloads` and `--name` apply to that run only and are **not**
 > written to the config file (only the generated identity, an explicitly
 > configured `port = 0`, settings saved in the UI, and manual peers are
-> persisted). `LANDROP_CONFIG_DIR` is still honored when set before launch.
+> persisted). `LANDROP_CONFIG_DIR` is still honored when set before launch, also
+> by the desktop app — handy for smoke tests in a throwaway config dir
+> (`LANDROP_CONFIG_DIR=/tmp/ld ./landrop-desktop`).
 
 ## Screenshots
 
@@ -408,6 +420,12 @@ sudo ufw allow 5353/udp
   interfering.
 - If discovery works one-way only, both devices must run the same protocol
   version (TXT `ver=1`).
+- A process that dies hard (SIGKILL, power loss) cannot send its mDNS goodbye
+  packet, so other devices keep listing it for up to 60 s — the peer TTL — before
+  it drops out. A normal quit always announces itself.
+- While the LAN looks unstable (no peers yet, or devices joining and leaving) the
+  UDP beacon goes out every 2 s; once the peer list has been stable for a minute
+  it backs off to every 20 s.
 
 ### Project layout
 

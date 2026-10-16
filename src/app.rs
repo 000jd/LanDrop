@@ -142,6 +142,9 @@ pub async fn start_node(options: NodeOptions) -> Result<RunningNode> {
         }
         cfg.port = local.port();
     }
+    // Snapshot of the file's contents *before* the run-only overrides below:
+    // this is what later settings saves are allowed to write back.
+    let disk_view = cfg.clone();
 
     // Run-only overrides; never written back to the config file.
     if let Some(p) = options.port {
@@ -201,6 +204,7 @@ pub async fn start_node(options: NodeOptions) -> Result<RunningNode> {
 
     let mut state = AppState::new(cfg.clone(), peers.clone(), transfers.clone());
     state.config_dir = config_dir.clone();
+    state.disk_cfg = Arc::new(tokio::sync::RwLock::new(disk_view));
 
     // Shutdown channel (broadcast to discovery, sweeps and server).
     let (shutdown_tx, shutdown_rx) = events::shutdown_channel();

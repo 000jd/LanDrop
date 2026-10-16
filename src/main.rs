@@ -2,7 +2,7 @@
 //!
 //! Run with `cargo run` or `landrop`; open http://localhost:8420.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -18,6 +18,7 @@ struct Args {
     hidden: bool,
     config_dir: Option<String>,
     no_port_scan: bool,
+    log_file: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -30,6 +31,7 @@ fn parse_args() -> Args {
         hidden: false,
         config_dir: None,
         no_port_scan: false,
+        log_file: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -54,6 +56,7 @@ fn parse_args() -> Args {
             "--hidden" => args.hidden = true,
             "--config-dir" => args.config_dir = it.next(),
             "--no-port-scan" => args.no_port_scan = true,
+            "--log-file" => args.log_file = it.next(),
             "--help" | "-h" => {
                 println!(
                     "LanDrop — LAN file sharing\n\n\
@@ -66,7 +69,8 @@ fn parse_args() -> Args {
                      \x20     --no-port-scan     fail if the port is busy (no fallback)\n\
                      \x20 -o, --open              open the UI in the browser\n\
                      \x20     --hidden            stay in the background (no browser)\n\
-                     \x20     --config-dir <dir>  use a custom config directory\n"
+                     \x20     --config-dir <dir>  use a custom config directory\n\
+                     \x20     --log-file <path>   append logs to a file instead of stderr\n"
                 );
                 std::process::exit(0);
             }
@@ -81,15 +85,33 @@ fn parse_args() -> Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info,mdns_sd=warn,reqwest=warn")),
-        )
-        .compact()
-        .init();
-
     let args = parse_args();
+
+    // Log destination: stderr by default, or a file for daemonised runs where
+    // stderr goes nowhere (`--log-file /var/log/landrop.log`).
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,mdns_sd=warn,reqwest=warn"));
+    match &args.log_file {
+        Some(path) => {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .with_context(|| format!("cannot open log file '{path}'"))?;
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_ansi(false)
+                .with_writer(file)
+                .compact()
+                .init();
+        }
+        None => {
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .compact()
+                .init();
+        }
+    }
 
     if let Some(info) =
         landrop::instance::live_instance_in(args.config_dir.as_deref().map(std::path::Path::new))
