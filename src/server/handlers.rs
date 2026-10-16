@@ -164,7 +164,24 @@ pub async fn api_peers(State(state): State<AppState>) -> Response {
         .map(|ip| ip.to_string())
         .collect();
     let peers = state.peers.list_others(&my_id, my_port, &my_ips).await;
-    Json(peers).into_response()
+    // Add the last readiness probe so the UI can flag a device that announces
+    // itself but never answers (usually a firewall on that device).
+    let mut out = Vec::with_capacity(peers.len());
+    for peer in peers {
+        let reachable = state.peers.is_reachable(&peer.id).await;
+        let mut view = serde_json::to_value(&peer).unwrap_or_default();
+        if let Some(obj) = view.as_object_mut() {
+            obj.insert(
+                "reachable".into(),
+                match reachable {
+                    Some(ok) => serde_json::Value::Bool(ok),
+                    None => serde_json::Value::Null,
+                },
+            );
+        }
+        out.push(view);
+    }
+    Json(out).into_response()
 }
 
 /// Add a manual peer by `ip:port` (persisted in config).

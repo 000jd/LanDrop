@@ -262,6 +262,54 @@ pub async fn start_node(options: NodeOptions) -> Result<RunningNode> {
         });
     }
 
+    // Reachability probe: a device that broadcasts but never answers TCP is
+    // nearly always blocked by a firewall on *its* side (typically after
+    // reinstalling to a new path, where a path-based rule no longer matches).
+    // Probing every 15 s lets the UI mark such devices instead of leaving the
+    // user with a list that silently fails.
+    {
+        let store = peers.clone();
+        let mut stop = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(15));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        for peer in store.list().await {
+                            let ok = match format!("{}:{}", peer.addr, peer.port)
+                                .parse::<std::net::SocketAddr>()
+                            {
+                                Ok(sa) => tokio::time::timeout(
+                                    std::time::Duration::from_millis(500),
+                                    tokio::net::TcpStream::connect(sa),
+                                )
+                                .await
+                                .map(|r| r.is_ok())
+                                .unwrap_or(false),
+                                Err(_) => false,
+                            };
+                            let changed = store.is_reachable(&peer.id).await != Some(ok);
+                            store.set_reachable(&peer.id, ok).await;
+                            if changed {
+                                if ok {
+                                    info!("peer {} ({}) is answering again", peer.name, peer.addr);
+                                } else {
+                                    warn!(
+                                        "peer {} ({}:{}) announced itself but does not answer TCP — \
+                                         firewall on that device?",
+                                        peer.name, peer.addr, peer.port
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    _ = events::wait_shutdown(&mut stop) => break,
+                }
+            }
+        });
+    }
+
     // Periodic peer expiry sweep, so the UI hears about devices leaving.
     {
         let store = peers.clone();

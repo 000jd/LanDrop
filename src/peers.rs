@@ -45,6 +45,11 @@ struct Inner {
 /// Concurrent-safe peer store with TTL-based expiry.
 pub struct PeerStore {
     inner: RwLock<Inner>,
+    /// Last TCP-probe result per peer id, filled in by the periodic probe in
+    /// `app.rs`. A device that announces itself but never answers is nearly
+    /// always blocked by a firewall, and the UI says so instead of leaving the
+    /// user staring at a device that silently fails.
+    reachable: RwLock<HashMap<String, bool>>,
 }
 
 impl Default for PeerStore {
@@ -57,7 +62,18 @@ impl PeerStore {
     pub fn new() -> Self {
         Self {
             inner: RwLock::new(Inner::default()),
+            reachable: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Record whether `peer_id` answered the last readiness probe.
+    pub async fn set_reachable(&self, peer_id: &str, ok: bool) {
+        self.reachable.write().await.insert(peer_id.to_string(), ok);
+    }
+
+    /// Last probe result for `peer_id` (`None` = not probed yet).
+    pub async fn is_reachable(&self, peer_id: &str) -> Option<bool> {
+        self.reachable.read().await.get(peer_id).copied()
     }
 
     /// Number of peers currently known (discovered + manual). Used by the
@@ -436,6 +452,18 @@ mod tests {
         assert!(parse_peer_addr("2001:db8::1", 8420).is_err());
         // Link-local IPv6 is refused even when bracketed.
         assert!(parse_peer_addr("[fe80::1]:8420", 8420).is_err());
+    }
+
+    #[tokio::test]
+    async fn reachability_is_tracked_per_peer() {
+        let store = PeerStore::new();
+        assert_eq!(store.is_reachable("p1").await, None, "not probed yet");
+        store.set_reachable("p1", true).await;
+        store.set_reachable("p2", false).await;
+        assert_eq!(store.is_reachable("p1").await, Some(true));
+        assert_eq!(store.is_reachable("p2").await, Some(false));
+        store.set_reachable("p1", false).await;
+        assert_eq!(store.is_reachable("p1").await, Some(false));
     }
 
     #[test]

@@ -285,6 +285,15 @@ fn tray_icon() -> tauri::image::Image<'static> {
     tauri::image::Image::new_owned(bytes.to_vec(), 32, 32)
 }
 
+/// Window/taskbar icon, embedded so the app shows its own mark even when it is
+/// run straight from the build directory (where no installed `.desktop` entry
+/// exists to supply one). Regenerate with `make icons`.
+#[cfg(desktop)]
+fn window_icon() -> tauri::image::Image<'static> {
+    let bytes: &[u8] = include_bytes!("../../assets/icon-64.rgba");
+    tauri::image::Image::new_owned(bytes.to_vec(), 64, 64)
+}
+
 #[cfg(desktop)]
 fn wants_hidden() -> bool {
     if std::env::args().any(|a| a == "--hidden") {
@@ -490,6 +499,11 @@ pub fn run() {
                 .title("LanDrop");
             #[cfg(desktop)]
             let builder = builder
+                // Embedded 64x64 RGBA from `assets/icon-64.rgba` (regenerate with
+                // `make icons`): a fixed asset, so failing here means the platform
+                // rejected it and a clear panic beats a window without a mark.
+                .icon(window_icon())
+                .expect("embedded window icon")
                 .inner_size(960.0, 660.0)
                 .min_inner_size(720.0, 520.0)
                 .center()

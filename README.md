@@ -420,6 +420,26 @@ sudo ufw allow 8420/tcp
 sudo ufw allow 5353/udp
 ```
 
+Two traps worth knowing:
+
+- **Rules bound to a path.** Some firewall front-ends create rules for an
+  *application path* instead of a port. After reinstalling LanDrop to a new
+  location (`~/.local/bin/landrop` → `/usr/bin/landrop-desktop`, or a different
+  AppImage), that rule no longer matches and the device becomes silently
+  unreachable. Re-add the rule for the new path, or prefer plain port rules
+  (`sudo ufw allow 8420/tcp`, `sudo firewall-cmd --add-port=8420/tcp`).
+- **One-way blocking is visible now.** Each node probes every device it has
+  discovered every 15 s. A device that announces itself but does not answer TCP
+  is marked **unreachable** in the device list (hover for the hint), and the log
+  says which address to check. That is the signature of a firewall on the *other*
+  device — the UDP beacon still gets through, so the device appears even though
+  sending to it would fail.
+
+If the device list is empty even though both apps are running, the beacons are not
+getting through: check that the two devices are on the same network (not a guest
+Wi-Fi or a VPN), then the firewall rules above, then add a manual peer with the
+other machine's `ip:port` to bypass discovery entirely.
+
 ### mDNS troubleshooting
 
 - Some routers/APs block multicast between clients ("client isolation"). In that

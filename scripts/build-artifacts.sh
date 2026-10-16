@@ -14,14 +14,26 @@ export JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk-amd64}"
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}"
 export NDK_HOME="${NDK_HOME:-$ANDROID_HOME/ndk/28.2.13676358}"
 
-for PID in $(ps -eo pid,comm | awk '$2=="landrop-desktop"{print $1}'); do
+# Stop anything running out of this repo (the CLI holds bin/landrop, which would
+# make `cp` fail with "Text file busy"). A copy installed system-wide is left
+# alone.
+for PID in $(ps -eo pid,comm | awk '$2=="landrop" || $2=="landrop-desktop"{print $1}'); do
   EXE=$(readlink -f "/proc/$PID/exe" 2>/dev/null || true)
   case "$EXE" in
-    */landrop/target/*) kill "$PID" && echo "stopped repo build pid $PID ($EXE)";;
+    */landrop/target/*|*/landrop/bin/*)
+      kill "$PID" 2>/dev/null || true
+      for _ in 1 2 3 4 5 6; do kill -0 "$PID" 2>/dev/null || break; sleep 0.5; done
+      kill -0 "$PID" 2>/dev/null && kill -9 "$PID" 2>/dev/null || true
+      echo "stopped repo process pid $PID ($EXE)"
+      ;;
     *) echo "left running: pid $PID ($EXE)";;
   esac
 done
 sleep 1
+# Replace the CLI binary unconditionally: a running copy makes `cp` fail with
+# "Text file busy", and unlinking first sidesteps that (the new file gets a new
+# inode).
+rm -f bin/landrop
 
 echo "=== CLI binary ==="
 make build

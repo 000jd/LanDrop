@@ -73,7 +73,7 @@
               <span class="muted sm" id="devicesHint">searching…</span>
             </div>
             <div id="peerList" class="peer-list"></div>
-            <div class="empty" id="peerEmpty">No other LanDrop devices on this Wi-Fi yet. Each computer, phone, or tablet must run the LanDrop app. You can also type its LAN address below.</div>
+            <div class="empty" id="peerEmpty">No other LanDrop devices on this Wi-Fi yet. Every computer, phone or tablet must be running the app <em>and</em> be on the same network. If the other device is listed but you cannot send, check its firewall (allow <strong>TCP 8420</strong> and <strong>UDP 5353</strong>) — a rule tied to an old install path stops matching after reinstalling. You can also add a device by its LAN address below. <a href="https://github.com/000jd/LanDrop#firewall" target="_blank" rel="noopener">Firewall help</a>.</div>
             <div class="manual-row">
               <input type="text" id="manualAddr" placeholder="192.168.1.25:8420" />
               <button class="btn ghost sm" id="addManualBtn" type="button">Add</button>

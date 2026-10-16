@@ -1149,3 +1149,11 @@ input[type="checkbox"]:checked::before {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* A device that announces itself but never answers TCP (usually a firewall on
+   that device). Same shape as the other tags, in the error colour. */
+.src-tag.blocked {
+  border-color: var(--err);
+  color: var(--err);
+  cursor: help;
+}

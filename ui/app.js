@@ -199,7 +199,7 @@ function renderPeers() {
 
   // Skip the DOM rebuild when nothing actually changed.
   const key = JSON.stringify(
-    peers.map((p) => [p.id, p.name, p.addr, p.port, p.source])
+    peers.map((p) => [p.id, p.name, p.addr, p.port, p.source, p.reachable])
   );
   if (key !== lastPeersKey) {
     lastPeersKey = key;
@@ -215,13 +215,19 @@ function renderPeers() {
         el.setAttribute("role", "button");
         const initial = (p.name || "?").trim().charAt(0) || "?";
         const src = p.source === "mdns" || p.source === "lan" ? "nearby" : p.source;
+        // A device that announces itself but never answers TCP is usually
+        // blocked by a firewall on its side — say so instead of failing later.
+        const blocked =
+          p.reachable === false
+            ? `<span class="src-tag blocked" title="This device announces itself but does not answer on ${esc(p.addr)}:${esc(p.port)}. Check its firewall (allow TCP ${esc(p.port)}) — a rule bound to an old install path stops matching after reinstalling.">unreachable</span>`
+            : `<span class="src-tag">${esc(src)}</span>`;
         el.innerHTML = `
           <div class="peer-avatar ${esc(p.source)}">${esc(initial)}</div>
           <div class="p-info">
             <div class="p-name">${esc(p.name)}</div>
             <div class="p-addr">${esc(p.addr)}:${esc(p.port)}</div>
           </div>
-          <span class="src-tag">${esc(src)}</span>
+          ${blocked}
         `;
         el.onclick = () => selectPeer(p);
         el.onkeydown = (e) => {
