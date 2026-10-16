@@ -248,6 +248,82 @@ enum Decision {
     Ignored,
 }
 
+/// One prompt for a whole batch (a folder or multi-file selection).
+///
+/// The files arrive as separate offers, so we wait until the batch stops growing
+/// before asking — otherwise a 40-file folder would mean 40 dialogs. Accepting
+/// releases every waiting member; rejecting rejects them all. Best-effort: files
+/// that disappeared meanwhile are skipped.
+pub fn prompt_batch(mgr: TransferManager, batch_id: String, batch_name: String, sender: String) {
+    #[cfg(not(target_os = "linux"))]
+    {
+        // Mobile has no system dialog: the in-app UI shows the batch.
+        let _ = (mgr, batch_id, batch_name, sender);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        tokio::spawn(async move {
+            // Wait for the batch to settle: three quiet half-second ticks.
+            let mut last = usize::MAX;
+            let mut quiet = 0u32;
+            for _ in 0..240 {
+                let waiting = mgr.waiting_in_batch(&batch_id).await;
+                if waiting.is_empty() {
+                    return;
+                }
+                if waiting.len() == last {
+                    quiet += 1;
+                    if quiet >= 3 {
+                        break;
+                    }
+                } else {
+                    quiet = 0;
+                    last = waiting.len();
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+
+            let members = mgr.waiting_in_batch(&batch_id).await;
+            if members.is_empty() {
+                return;
+            }
+            let (files, bytes) = mgr.batch_totals(&members).await;
+            let body = format!(
+                "{sender} wants to send you \"{batch_name}\" — {files} files ({})",
+                crate::util::human_size(bytes)
+            );
+            notify("LanDrop — incoming folder", &body);
+
+            let sender_c = sender.clone();
+            let body_c = body.clone();
+            let decision = tokio::task::spawn_blocking(move || ask_user(&sender_c, &body_c))
+                .await
+                .unwrap_or(Decision::Ignored);
+            tracing::info!("batch {batch_id}: {files} files decided {decision:?}");
+
+            match decision {
+                Decision::Accept => {
+                    for id in members {
+                        if let Err(e) = mgr.accept(&id, None).await {
+                            tracing::warn!("batch accept failed for {id}: {e:#}");
+                        }
+                    }
+                }
+                Decision::Reject => {
+                    for id in members {
+                        if let Err(e) = mgr.reject(&id).await {
+                            tracing::warn!("batch reject failed for {id}: {e:#}");
+                        }
+                    }
+                }
+                Decision::Ignored => {
+                    // Left to the app UI.
+                }
+            }
+        });
+    }
+}
+
 /// Prompt the user to accept or reject an incoming file without opening the
 /// full app. Runs asynchronously so the offer handler can return immediately.
 pub fn prompt_incoming(mgr: TransferManager, id: String, sender: String, filename: String) {

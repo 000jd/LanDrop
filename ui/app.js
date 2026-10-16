@@ -435,6 +435,144 @@ const STATUS_TEXT = {
   cancelled: "Cancelled",
 };
 
+/// Group transfers into singles and batches, keeping list order.
+function groupBatches(items) {
+  const groups = [];
+  const byBatch = new Map();
+  for (const t of items) {
+    if (!t.batch_id) {
+      groups.push({ kind: "single", t });
+      continue;
+    }
+    let group = byBatch.get(t.batch_id);
+    if (!group) {
+      group = { kind: "batch", id: t.batch_id, name: t.batch_name || "files", items: [] };
+      byBatch.set(t.batch_id, group);
+      groups.push(group);
+    }
+    group.items.push(t);
+  }
+  return groups;
+}
+
+/// One row for a whole folder/selection: the receiver answers once for the batch,
+/// so the UI shows one card with the count, the total size and the joint progress.
+function batchCard(g) {
+  const items = g.items;
+  const size = items.reduce((sum, t) => sum + (t.size || 0), 0);
+  const done = items.reduce((sum, t) => sum + (t.bytes_done || 0), 0);
+  const pct = size > 0 ? Math.round((done / size) * 100) : 0;
+  const incoming = items[0].direction === "incoming";
+  const waiting = items.filter((t) => t.status === "waiting").length;
+  const active = items.filter((t) =>
+    ["preparing", "waiting", "accepted", "transferring"].includes(t.status)
+  );
+  const streaming = items.filter((t) => t.status === "transferring");
+  const rate = streaming.reduce((sum, t) => sum + (t.speed_bps || 0), 0);
+  const etas = streaming.map((t) => t.eta_secs).filter((v) => v != null);
+  const worst = etas.length ? Math.max(...etas) : null;
+  const failed = items.filter((t) => ["failed", "cancelled", "rejected"].includes(t.status)).length;
+  const names = items.slice(0, 3).map((t) => t.filename).join(", ");
+  const statusText =
+    waiting === items.length
+      ? "waiting"
+      : active.length
+        ? `${active.length} active`
+        : failed === items.length
+          ? "failed"
+          : "done";
+  const canAccept = incoming && waiting > 0;
+  const canCancel = incoming
+    ? items.some((t) => ["accepted", "transferring"].includes(t.status))
+    : active.length > 0;
+  return `
+    <div class="transfer batch">
+      <div class="t-head">
+        <div>
+          <div class="t-file">${esc(g.name)}</div>
+          <div class="t-meta">
+            <span>${items.length} files ${incoming ? "from" : "to"} ${esc(items[0].peer_name)}</span>
+            <span>${fmtSize(size)}</span>
+          </div>
+          <div class="t-meta"><span class="batch-names">${esc(names)}${items.length > 3 ? " …" : ""}</span></div>
+        </div>
+        <span class="t-status">${esc(statusText)}</span>
+      </div>
+      ${
+        active.length
+          ? `<div class="progress"><div style="width:${pct}%"></div></div><div class="pct">${pct}%${rate > 0 ? ` · ${fmtSize(Math.round(rate))}/s` : ""}${worst != null ? ` · ~${fmtEta(worst)} left` : ""}</div>`
+          : ""
+      }
+      ${
+        canAccept
+          ? `<div class="t-actions">
+          <button class="btn dark sm" data-accept-batch="${esc(g.id)}">Accept all ${items.length}</button>
+          <button class="btn danger sm" data-reject-batch="${esc(g.id)}">Reject</button>
+        </div>`
+          : ""
+      }
+      ${
+        canCancel
+          ? `<div class="t-actions"><button class="btn ghost sm" data-cancel-batch="${esc(g.id)}">Cancel batch</button></div>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+/// Render transfers: batches collapse into one card, singles stay as they were.
+function renderCards(items) {
+  return groupBatches(items)
+    .map((g) => (g.kind === "batch" ? batchCard(g) : transferCard(g.t)))
+    .join("");
+}
+
+/// Members of a batch that are still in the given statuses.
+function batchMembers(id, statuses) {
+  return state.transfers.filter((t) => t.batch_id === id && statuses.includes(t.status));
+}
+
+async function acceptBatch(id) {
+  const waiting = batchMembers(id, ["waiting"]);
+  let ok = 0;
+  for (const t of waiting) {
+    try {
+      await api(`/api/transfers/${t.id}/accept`, { method: "POST" });
+      ok++;
+    } catch {
+      // Keep going: one bad member must not block the rest.
+    }
+  }
+  toast(ok === waiting.length ? `Accepted ${ok} files` : `Accepted ${ok} of ${waiting.length}`, ok ? "success" : "error");
+  await loadTransfers();
+}
+
+async function rejectBatch(id) {
+  const waiting = batchMembers(id, ["waiting"]);
+  for (const t of waiting) {
+    try {
+      await api(`/api/transfers/${t.id}/reject`, { method: "POST" });
+    } catch {
+      // Best effort.
+    }
+  }
+  toast(waiting.length === 1 ? "Rejected" : `Rejected ${waiting.length} files`);
+  await loadTransfers();
+}
+
+async function cancelBatch(id) {
+  const active = batchMembers(id, ["preparing", "waiting", "accepted", "transferring"]);
+  for (const t of active) {
+    try {
+      await api(`/api/transfers/${t.id}/cancel`, { method: "POST" });
+    } catch {
+      // Best effort.
+    }
+  }
+  toast(active.length === 1 ? "Cancelled" : `Cancelled ${active.length} files`);
+  await loadTransfers();
+}
+
 function transferCard(t) {
   const pct = Math.round(t.progress * 100);
   const streaming = t.status === "transferring";
@@ -479,21 +617,21 @@ function transferCard(t) {
 function renderPending() {
   const list = $("pendingList");
   const pending = state.transfers.filter((t) => t.direction === "incoming" && t.status === "waiting");
-  list.innerHTML = pending.map(transferCard).join("");
+  list.innerHTML = renderCards(pending);
   $("pendingEmpty").style.display = pending.length ? "none" : "";
 }
 
 function renderIncoming() {
   const list = $("incomingList");
   const items = state.transfers.filter((t) => t.direction === "incoming" && t.status !== "waiting");
-  list.innerHTML = items.map(transferCard).join("");
+  list.innerHTML = renderCards(items);
   $("incomingEmpty").style.display = items.length ? "none" : "";
 }
 
 function renderOutgoing() {
   const list = $("outgoingList");
   const items = state.transfers.filter((t) => t.direction === "outgoing");
-  list.innerHTML = items.map(transferCard).join("");
+  list.innerHTML = renderCards(items);
 }
 
 function updateBadge() {
@@ -518,6 +656,9 @@ async function sendFiles() {
 
   const btn = $("sendBtn");
   btn.disabled = true;
+  // One batch for a multi-file send, so the receiver is asked once (a single file
+  // stays a plain individual transfer).
+  const batchId = files.length > 1 ? `ui-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` : null;
   const failures = [];              // human-readable, for the summary toast
   const failedPerFile = new Map();  // file -> how many targets refused it
   const total = files.length * targets.length;
@@ -534,6 +675,10 @@ async function sendFiles() {
         // Folder sends: the receiver rebuilds the tree from this path.
         const rel = state.relPaths.get(file);
         if (rel) fd.append("rel_path", rel);
+        if (batchId) {
+          fd.append("batch_id", batchId);
+          fd.append("batch_name", `${files.length} files`);
+        }
         try {
           await api("/api/send", { method: "POST", body: fd });
         } catch (e) {
@@ -1086,7 +1231,13 @@ function init() {
     const cancel = e.target.closest("[data-cancel]");
     const accept = e.target.closest("[data-accept]");
     const reject = e.target.closest("[data-reject]");
-    if (cancel) cancelTransfer(cancel.dataset.cancel);
+    const acceptBatchBtn = e.target.closest("[data-accept-batch]");
+    const rejectBatchBtn = e.target.closest("[data-reject-batch]");
+    const cancelBatchBtn = e.target.closest("[data-cancel-batch]");
+    if (acceptBatchBtn) acceptBatch(acceptBatchBtn.dataset.acceptBatch);
+    else if (rejectBatchBtn) rejectBatch(rejectBatchBtn.dataset.rejectBatch);
+    else if (cancelBatchBtn) cancelBatch(cancelBatchBtn.dataset.cancelBatch);
+    else if (cancel) cancelTransfer(cancel.dataset.cancel);
     else if (accept) acceptTransfer(accept.dataset.accept);
     else if (reject) rejectTransfer(reject.dataset.reject);
   });

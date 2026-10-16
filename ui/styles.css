@@ -1163,3 +1163,12 @@ input[type="checkbox"]:checked::before {
   width: 100%;
   margin-bottom: 10px;
 }
+
+/* A folder/multi-file batch: one card, one decision. */
+.transfer.batch {
+  border-left: 6px solid var(--accent);
+}
+.batch-names {
+  color: var(--ink-3);
+  font-size: 11.5px;
+}

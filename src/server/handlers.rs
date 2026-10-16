@@ -259,6 +259,8 @@ pub async fn api_send(
 ) -> Response {
     let mut target: Option<String> = None;
     let mut rel_path: Option<String> = None;
+    let mut batch_id: Option<String> = None;
+    let mut batch_name: Option<String> = None;
     let mut file_meta: Option<(String, u64, PathBuf, Option<String>)> = None; // (name, size, staged, sha)
 
     loop {
@@ -293,6 +295,21 @@ pub async fn api_send(
                 let v = v.trim();
                 if !v.is_empty() {
                     rel_path = Some(crate::protocol::truncate_chars(v, 1024));
+                }
+            }
+            continue;
+        }
+        if name == "batch_id" || name == "batch_name" {
+            // Optional: the UI groups a multi-file send so the receiver is asked
+            // once for the whole thing.
+            if let Ok(v) = field.text().await {
+                let v = crate::protocol::truncate_chars(v.trim(), 128);
+                if !v.is_empty() {
+                    if name == "batch_id" {
+                        batch_id = Some(v);
+                    } else {
+                        batch_name = Some(v);
+                    }
                 }
             }
             continue;
@@ -423,8 +440,15 @@ pub async fn api_send(
         }
     };
 
-    let id = match spawn_send_in(
+    let meta = crate::transfer::sender::SendMeta {
+        batch: batch_id.map(|id| crate::transfer::sender::SendBatch {
+            id,
+            name: batch_name.unwrap_or_else(|| filename.clone()),
+        }),
         rel_path,
+    };
+    let id = match spawn_send_in(
+        meta,
         &state.transfers,
         peer,
         filename,
@@ -1164,6 +1188,16 @@ pub async fn api_send_path(
     }
 
     let (files, skipped) = collect_sendable(&roots, MAX_DROPPED_FILES);
+    // One batch per request: a dropped folder (or selection) is one question on
+    // the other side, whatever the number of files or devices.
+    let batch = crate::transfer::sender::SendBatch::new(match roots.as_slice() {
+        [single] if single.is_dir() => single
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("folder")
+            .to_string(),
+        _ => format!("{} files", files.len()),
+    });
 
     let mut peers = Vec::new();
     for target in &targets {
@@ -1227,7 +1261,10 @@ pub async fn api_send_path(
                 }
             };
             match crate::transfer::sender::spawn_send_in(
-                rel_dir.clone(),
+                crate::transfer::sender::SendMeta {
+                    batch: Some(batch.clone()),
+                    rel_path: rel_dir.clone(),
+                },
                 &state.transfers,
                 peer.clone(),
                 filename.clone(),

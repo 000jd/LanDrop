@@ -48,6 +48,27 @@ pub fn disk_usage(_path: &Path) -> Option<(u64, u64)> {
     None
 }
 
+/// Compact human size: `812 B`, `1.9 MB`, `2.4 GB`.
+pub fn human_size(bytes: u64) -> String {
+    const UNITS: [(&str, u64); 4] = [
+        ("GB", 1024 * 1024 * 1024),
+        ("MB", 1024 * 1024),
+        ("KB", 1024),
+        ("B", 1),
+    ];
+    for (unit, scale) in UNITS {
+        if bytes >= scale {
+            let value = bytes as f64 / scale as f64;
+            return if scale == 1 || value >= 10.0 {
+                format!("{} {unit}", value.round() as u64)
+            } else {
+                format!("{value:.1} {unit}")
+            };
+        }
+    }
+    "0 B".to_string()
+}
+
 /// Compact human duration: `42 s`, `3 min 5 s`, `2 h 4 min`.
 pub fn human_duration(secs: u64) -> String {
     if secs < 60 {
@@ -78,6 +99,15 @@ mod tests {
         let (free, total) = disk_usage(Path::new("/")).expect("root filesystem is readable");
         assert!(total > 0);
         assert!(free <= total);
+    }
+
+    #[test]
+    fn sizes_are_compact() {
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(812), "812 B");
+        assert_eq!(human_size(2048), "2.0 KB");
+        assert_eq!(human_size(1_990_000), "1.9 MB");
+        assert_eq!(human_size(2_400_000_000), "2.2 GB");
     }
 
     /// The guarded arithmetic must never wrap, whatever the OS reports.

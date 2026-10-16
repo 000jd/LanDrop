@@ -35,6 +35,13 @@ pub struct Offer {
     /// pair simply saves the file flat.
     #[serde(default)]
     pub rel_path: Option<String>,
+    /// Send batch: every file of one folder/selection shares this id, so the
+    /// receiver can ask the user **once** for the whole batch. Optional; without
+    /// it each file is an individual decision, as before.
+    #[serde(default)]
+    pub batch_id: Option<String>,
+    #[serde(default)]
+    pub batch_name: Option<String>,
 }
 
 /// Streaming SHA-256 of a file (lower-case hex), used when a sender hands over a
@@ -128,6 +135,9 @@ pub struct TransferView {
     pub error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Send batch (folder / selection) this file belongs to, if any.
+    pub batch_id: Option<String>,
+    pub batch_name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -272,6 +282,22 @@ mod tests {
         assert_eq!(sanitize_filename("."), "unnamed-file");
         assert_eq!(sanitize_filename(""), "unnamed-file");
         assert_eq!(sanitize_filename("   "), "unnamed-file");
+    }
+
+    #[test]
+    fn batch_fields_default_to_none_and_round_trip() {
+        let plain: Offer =
+            serde_json::from_str(r#"{"sender_id":"s","sender_name":"n","filename":"f","size":1}"#)
+                .unwrap();
+        assert!(plain.batch_id.is_none() && plain.batch_name.is_none());
+
+        let batched: Offer = serde_json::from_str(
+            r#"{"sender_id":"s","sender_name":"n","filename":"f","size":1,
+                "batch_id":"b-1","batch_name":"holiday"}"#,
+        )
+        .unwrap();
+        assert_eq!(batched.batch_id.as_deref(), Some("b-1"));
+        assert_eq!(batched.batch_name.as_deref(), Some("holiday"));
     }
 
     #[test]

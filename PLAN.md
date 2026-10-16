@@ -334,6 +334,45 @@ against the code before acting; three claims did not survive that check.
   one JSON field — the 15 lines stay, now with a bounded read and shared by the
   quit/focus helpers.
 
+## Round 10: one prompt per folder (send batches)
+
+After Round 9 a dropped folder arrived with its structure intact, but the receiver
+was asked to accept **each file separately** — one dialog per image, and a project
+folder turned into a pile of individual offers. Requested: one accept (or reject)
+for the whole folder, and the folder to arrive *as a folder*.
+
+### Design: batches on top of the existing per-file transfers
+
+Uploads stay one request per file (that is what makes progress, resume-on-retry
+and tokens work), but the offers now carry a **batch**: an id plus a display name
+(`holiday`, `12 files`). The receiver groups them, so a folder is one decision:
+
+- `Offer.batch_id` / `Offer.batch_name` (both optional → older peers just see
+  individual files).
+- `/api/send-path` mints a batch for a dropped folder (name = folder name) and for
+  a multi-file selection (name = "N files"); `/api/send` accepts the same two
+  fields so the browser path can group too.
+- The receiver's prompt waits ~1.5 s after the last offer of a batch arrives, then
+  asks **once**: *"tester wants to send you "holiday" — 3 files (1.9 MB)"*.
+  Accept accepts every member, reject rejects them all.
+- The UI shows one row per batch with total size and aggregate progress, plus the
+  file names, instead of one row per file. Files inside the batch keep their
+  relative paths, so the folder lands as a folder.
+- Single files are unchanged: no batch, one prompt, one row.
+
+### Work
+
+1. Protocol: batch fields + round-trip test.
+2. Transfer record keeps the batch; helper to list a batch's waiting members.
+3. Sender: `SendBatch` plumbed through `spawn_send_in` (the old entry points
+   delegate with `None`).
+4. Handlers: batch on `/api/send-path`, optional batch fields on `/api/send`.
+5. notify: one prompt per batch, with the settle window; accept/reject fan out.
+6. UI: grouped row (count, total size, aggregate progress, file names) with
+   batch-level accept/reject.
+7. Tests: batch fields, batch fan-out, and an end-to-end folder send where one
+   acceptance releases every file and the tree is recreated.
+
 ## Round 9: folders, multi-device, desktop drops
 
 Requested: (a) folder drag & drop, (b) pick **several** devices and send to all of

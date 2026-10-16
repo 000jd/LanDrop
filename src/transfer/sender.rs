@@ -41,6 +41,34 @@ fn upload_timeout(size: u64) -> Duration {
     Duration::from_secs(120) + Duration::from_secs(size / MIN_UPLOAD_BYTES_PER_SEC)
 }
 
+/// A send batch: one folder or selection, so the receiver decides **once**.
+///
+/// Files still travel as individual transfers (progress, tokens, retry), but they
+/// share this id and name, and the receiver groups them into one question.
+#[derive(Debug, Clone)]
+pub struct SendBatch {
+    pub id: String,
+    pub name: String,
+}
+
+impl SendBatch {
+    /// Mint a batch for a folder name or a description like `3 files`.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: name.into(),
+        }
+    }
+}
+
+/// Optional metadata for one outgoing transfer: which folder/selection it belongs
+/// to, and where it sits inside that selection.
+#[derive(Debug, Clone, Default)]
+pub struct SendMeta {
+    pub batch: Option<SendBatch>,
+    pub rel_path: Option<String>,
+}
+
 /// Start an outgoing transfer in the background. Returns the transfer id.
 ///
 /// `local_path` is the private staged copy of the file; it is removed once
@@ -53,13 +81,22 @@ pub async fn spawn_send(
     sha: Option<String>,
     local_path: PathBuf,
 ) -> Result<String> {
-    spawn_send_in(None, mgr, peer, filename, size, sha, local_path).await
+    spawn_send_in(
+        SendMeta::default(),
+        mgr,
+        peer,
+        filename,
+        size,
+        sha,
+        local_path,
+    )
+    .await
 }
 
 /// Like [`spawn_send`], but the offer carries the sender's relative path so the
 /// receiver recreates the folder tree under its download directory.
 pub async fn spawn_send_in(
-    rel_path: Option<String>,
+    meta: SendMeta,
     mgr: &TransferManager,
     peer: Peer,
     filename: String,
@@ -77,7 +114,9 @@ pub async fn spawn_send_in(
         size,
         sha256: sha,
         note: String::new(),
-        rel_path,
+        rel_path: meta.rel_path,
+        batch_id: meta.batch.as_ref().map(|b| b.id.clone()),
+        batch_name: meta.batch.as_ref().map(|b| b.name.clone()),
     };
 
     let id = {

@@ -85,6 +85,8 @@ async fn offer_accepted(
             sha256,
             note: String::new(),
             rel_path: None,
+            batch_id: None,
+            batch_name: None,
         })
         .send()
         .await
@@ -455,6 +457,61 @@ async fn send_path_walks_folders_and_uses_the_published_selection() {
 }
 
 #[tokio::test]
+async fn a_batch_is_one_decision_for_every_file() {
+    // A dropped folder arrives as several offers that share a batch id: the
+    // receiver groups them, so one answer covers the whole folder.
+    let dir = tempfile::tempdir().unwrap();
+    let (state, port, _) = instance("bob", dir.path().join("dl")).await;
+    let base = format!("http://127.0.0.1:{port}");
+    let client = reqwest::Client::new();
+
+    let mut ids = Vec::new();
+    for (name, rel) in [("a.png", "pics"), ("b.png", "pics/2026"), ("notes.txt", "")] {
+        let resp = client
+            .post(format!("{base}/api/v1/offer"))
+            .json(&serde_json::json!({
+                "sender_id": "tester",
+                "sender_name": "tester",
+                "filename": name,
+                "size": 4,
+                "sha256": null,
+                "note": "",
+                "rel_path": rel,
+                "batch_id": "batch-1",
+                "batch_name": "pics",
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success(), "offer rejected: {resp:?}");
+        ids.push(
+            resp.json::<serde_json::Value>().await.unwrap()["transfer_id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+    }
+
+    // One batch of three, described by count and total size.
+    let waiting = state.transfers.waiting_in_batch("batch-1").await;
+    assert_eq!(waiting.len(), 3, "batch members: {waiting:?}");
+    let (files, bytes) = state.transfers.batch_totals(&waiting).await;
+    assert_eq!((files, bytes), (3, 12));
+    // A different batch is a different decision.
+    assert!(state.transfers.waiting_in_batch("batch-2").await.is_empty());
+
+    // Accepting the batch releases every member — exactly what the batch prompt
+    // and the batch card's "Accept all" do.
+    for id in &waiting {
+        state.transfers.accept(id, None).await.unwrap();
+    }
+    assert!(state.transfers.waiting_in_batch("batch-1").await.is_empty());
+    for id in &ids {
+        assert_eq!(state.transfers.get(id).await.unwrap().status, "accepted");
+    }
+}
+
+#[tokio::test]
 async fn metrics_endpoint_reports_counters() {
     let dir = tempfile::tempdir().unwrap();
     let (_, port, _) = instance("dave", dir.path().join("dl")).await;
@@ -538,6 +595,8 @@ async fn upload_without_accept_is_rejected_by_receiver() {
             sha256: None,
             note: String::new(),
             rel_path: None,
+            batch_id: None,
+            batch_name: None,
         })
         .send()
         .await
@@ -980,6 +1039,8 @@ async fn offer_with_bad_sha256_is_rejected() {
             sha256: Some("not-a-hash".into()),
             note: String::new(),
             rel_path: None,
+            batch_id: None,
+            batch_name: None,
         })
         .send()
         .await
@@ -1048,6 +1109,8 @@ async fn offer_pending(base: &str, filename: &str, size: u64) -> String {
             sha256: None,
             note: String::new(),
             rel_path: None,
+            batch_id: None,
+            batch_name: None,
         })
         .send()
         .await

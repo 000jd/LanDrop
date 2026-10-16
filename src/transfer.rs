@@ -130,6 +130,10 @@ pub struct Transfer {
     /// Relative path the sender asked for (folder sends); sanitized on arrival,
     /// applied when choosing the destination directory.
     pub rel_path: Option<String>,
+    /// Send batch (folder / multi-file selection), shared by every file of one
+    /// send so the receiver asks once.
+    pub batch_id: Option<String>,
+    pub batch_name: Option<String>,
     /// Bytes streamed so far (for speed / ETA).
     pub bytes_done: u64,
     /// Unix seconds when streaming started.
@@ -163,6 +167,8 @@ impl Transfer {
             updated_at: now,
             sha256: offer.sha256.clone(),
             rel_path: offer.rel_path.clone(),
+            batch_id: offer.batch_id.clone(),
+            batch_name: offer.batch_name.clone(),
             bytes_done: 0,
             started_at: None,
             save_dir: None,
@@ -190,6 +196,8 @@ impl Transfer {
             updated_at: now,
             sha256: None,
             rel_path: None,
+            batch_id: offer.batch_id.clone(),
+            batch_name: offer.batch_name.clone(),
             bytes_done: 0,
             started_at: None,
             save_dir: None,
@@ -219,6 +227,8 @@ impl Transfer {
             note: self.note.clone(),
             error: self.error.clone(),
             created_at: self.created_at,
+            batch_id: self.batch_id.clone(),
+            batch_name: self.batch_name.clone(),
             updated_at: self.updated_at,
         }
     }
@@ -461,14 +471,54 @@ impl TransferManager {
                 warn!("auto-accept failed for {id}: {e:#}");
             }
         } else if self.interactive_prompts.load(Ordering::Relaxed) {
-            crate::notify::prompt_incoming(
-                self.clone(),
-                id.clone(),
-                view.peer_name.clone(),
-                view.filename.clone(),
-            );
+            match view.batch_id.clone() {
+                // A folder or multi-file selection: one question for the batch,
+                // asked once the batch stops growing (see `notify::prompt_batch`).
+                Some(batch_id) => crate::notify::prompt_batch(
+                    self.clone(),
+                    batch_id,
+                    view.batch_name
+                        .clone()
+                        .unwrap_or_else(|| "files".to_string()),
+                    view.peer_name.clone(),
+                ),
+                None => crate::notify::prompt_incoming(
+                    self.clone(),
+                    id.clone(),
+                    view.peer_name.clone(),
+                    view.filename.clone(),
+                ),
+            }
         }
         Ok(id)
+    }
+
+    /// Ids of the incoming transfers that are still waiting and belong to
+    /// `batch_id` — the fan-out list for a batch accept/reject.
+    pub async fn waiting_in_batch(&self, batch_id: &str) -> Vec<String> {
+        let map = self.transfers.read().await;
+        map.values()
+            .filter(|t| {
+                t.direction == Direction::Incoming
+                    && t.status == Status::Waiting
+                    && t.batch_id.as_deref() == Some(batch_id)
+            })
+            .map(|t| t.id.clone())
+            .collect()
+    }
+
+    /// `(files, bytes)` of the given transfers, for a batch summary line.
+    pub async fn batch_totals(&self, ids: &[String]) -> (usize, u64) {
+        let map = self.transfers.read().await;
+        let mut bytes = 0u64;
+        let mut files = 0usize;
+        for id in ids {
+            if let Some(t) = map.get(id) {
+                files += 1;
+                bytes += t.size;
+            }
+        }
+        (files, bytes)
     }
 
     /// Accept an incoming transfer: generate a one-time upload token.
@@ -606,6 +656,8 @@ mod tests {
             sha256: None,
             note: String::new(),
             rel_path: None,
+            batch_id: None,
+            batch_name: None,
         }
     }
 
