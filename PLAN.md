@@ -334,6 +334,61 @@ against the code before acting; three claims did not survive that check.
   one JSON field — the 15 lines stay, now with a bounded read and shared by the
   quit/focus helpers.
 
+## Round 8: quality-of-life list — verified, partly implemented
+
+A second list (15 "nice to have" items) came in; each was checked against the
+code first. Several were already done, two are deliberately declined.
+
+### Implemented
+
+| Item | Where |
+|---|---|
+| `0.0.0.0/8` ("this network") refused, not just `0.0.0.0` | `src/peers.rs` + tests |
+| 64-bit-safe disk arithmetic | `src/util.rs` (`saturating_mul`, `u64::from`) + test |
+| Metrics: transfers started/finished/failed, bytes sent/received | new `src/metrics.rs`, wired into sender/receiver, exposed as `GET /api/metrics` + unit and integration tests |
+| Cancel UX: "stopped by the receiver (cancelled)" instead of a bare socket error | `src/transfer/sender.rs` (`remote_status` re-checks the offer before blaming the network); the UI already renders `error` |
+| Structured tracing: transfer counters and reason messages use structured fields; tokens are never logged | `sender.rs`, `receiver.rs`, `handlers.rs` |
+| Interface filtering behind `InterfaceSource` (loopback/container/VPN names, link-local) with fabricated-interface tests | `src/discovery.rs` |
+| `desktop-file-validate` in CI (and locally) | `scripts/desktop-file-validate.sh`, `.github/workflows/ci.yml` |
+| Real fuzz targets for the parsers | `fuzz/` (`sanitize_filename`, `parse_peer_addr`, `wire_json`), excluded from the workspace |
+| Android build steps written up properly; `docs/DESKTOP_LINUX.md` → `docs/DESKTOP.md` | `docs/DESKTOP.md` |
+| Test-mode/sandbox paths documented (config dir covers staging + instance) | README + `docs/DESKTOP.md` |
+
+### Already done before this list
+
+- Adaptive UDP beacon (2 s → 20 s when stable) — `src/discovery.rs`.
+- SSE channel capacity raised to 1024. Note the "per-subscriber" suggestion is
+  already how `tokio::sync::broadcast` works: each receiver has its own cursor
+  and its own lag detection, so one slow client cannot stall another; only the
+  shared capacity is global, which is why it is 1024.
+
+### Declined, with reasons
+
+- **zstd compression for text payloads**: on a LAN the bottleneck is rarely the
+  link, and adding content-encoding negotiation to the wire protocol adds a new
+  failure mode (a receiver that cannot decode) for a win that mostly does not
+  exist for photos/videos — which is what people actually send. Worth revisiting
+  only with measurements.
+- **`reqwest::blocking` in `instance.rs`**: would make hyper + TLS a runtime
+  dependency of the core binary to read one JSON field; the ~15 lines stay, now
+  shared by the quit/focus helpers and bounded to 8 KiB.
+- **Android SAF folder picker**: a real feature with real device testing needs
+  (ActivityResult plumbing, permission prompts, a Tauri command); it stays on the
+  roadmap rather than being half-implemented.
+
+### Fuzzing
+
+```bash
+cargo install cargo-fuzz          # needs a working nightly toolchain
+cargo +nightly fuzz run sanitize_filename -- -max_total_time=60
+cargo +nightly fuzz run parse_peer_addr  -- -max_total_time=60
+cargo +nightly fuzz run wire_json        -- -max_total_time=60
+```
+
+The targets assert the invariants the unit tests care about (never panic, always
+a usable filename, display form round-trips, decodable ⇒ re-encodable), so a
+counterexample is a real bug rather than noise.
+
 ### Follow-up after the review landed
 
 Two items came out of the review conversation itself:

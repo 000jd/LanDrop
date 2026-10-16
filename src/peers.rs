@@ -260,7 +260,8 @@ pub fn parse_peer_addr_with(
     }
     match addr.ip() {
         IpAddr::V4(v) => {
-            if v.is_unspecified() || v.is_multicast() || v.is_broadcast() {
+            // `0.0.0.0/8` is "this network" (RFC 1122): never a real host.
+            if v.octets()[0] == 0 || v.is_unspecified() || v.is_multicast() || v.is_broadcast() {
                 bail!("refusing unsafe target address '{input}'");
             }
             // `x.y.z.255` is the broadcast address of a /24 — i.e. of almost
@@ -440,6 +441,8 @@ mod tests {
     #[test]
     fn parse_peer_addr_refuses_unsafe_targets() {
         assert!(parse_peer_addr("0.0.0.0:8420", 8420).is_err());
+        // The whole "this network" range, not just 0.0.0.0.
+        assert!(parse_peer_addr("0.1.2.3:8420", 8420).is_err());
         assert!(parse_peer_addr("169.254.169.254:80", 8420).is_err());
         assert!(parse_peer_addr("224.0.0.1:8420", 8420).is_err());
         assert!(parse_peer_addr("255.255.255.255:8420", 8420).is_err());

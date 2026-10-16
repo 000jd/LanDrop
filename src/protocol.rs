@@ -114,8 +114,12 @@ pub fn sanitize_filename(raw: &str) -> String {
         .collect();
     let cleaned = truncate_chars(cleaned.trim(), MAX_FILENAME_CHARS);
     let cleaned = cleaned.replace(['/', '\0'], "_");
-    // Trailing dots/spaces are invalid on Windows and confusing elsewhere.
-    let cleaned = cleaned.trim_end_matches(['.', ' ']);
+    // Trailing dots/spaces are invalid on Windows and confusing elsewhere. Strip
+    // them together with *any* trailing whitespace (the Unicode ones `trim`
+    // already removes), otherwise a name ending in "\u{a0}." keeps the non-break
+    // space on the first pass and loses it on the second — i.e. sanitising would
+    // not be idempotent. Found by fuzz/fuzz_targets/sanitize_filename.rs.
+    let cleaned = cleaned.trim_end_matches(|c: char| c == '.' || c.is_whitespace());
     if cleaned.is_empty() {
         "unnamed-file".to_string()
     } else {
@@ -212,6 +216,10 @@ mod tests {
         assert_eq!(sanitize_filename("a\u{0}b.txt"), "ab.txt");
         assert_eq!(sanitize_filename("ok\u{7}.txt"), "ok.txt");
         assert_eq!(sanitize_filename("trailing...  "), "trailing");
+        // A trailing dot after Unicode whitespace: both must go, and sanitising
+        // the result again must change nothing (fuzzer counterexample).
+        assert_eq!(sanitize_filename("Ϳ \u{a0}."), "Ϳ");
+        assert_eq!(sanitize_filename("Ϳ \u{a0}"), "Ϳ");
         assert_eq!(sanitize_filename("/"), "unnamed-file");
         // Long names are capped without splitting a code point.
         let long = "é".repeat(MAX_FILENAME_CHARS * 2);

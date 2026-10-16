@@ -74,11 +74,22 @@ pub async fn spawn_send(
         id
     };
     mgr.emit_update(&id, "transfer_updated").await;
+    mgr.metrics.transfer_started();
 
     let mgr = mgr.clone();
     let id_spawn = id.clone();
+    let peer_for_reason = peer.clone();
     tokio::spawn(async move {
-        if let Err(e) = run_send(&mgr, &id_spawn, peer, offer, local_path, cancel_rx).await {
+        if let Err(e) = run_send(&mgr, &id_spawn, peer, offer.clone(), local_path, cancel_rx).await
+        {
+            // Ask the receiver *why* it stopped before blaming the network: a
+            // receiver-side cancel/reject deserves its own message in the UI.
+            let reason = remote_status(&mgr, &peer_for_reason, &id_spawn).await;
+            let message = match reason.as_deref() {
+                Some("cancelled") => "stopped by the receiver (cancelled)".to_string(),
+                Some("rejected") => "rejected by the receiver".to_string(),
+                _ => e.to_string(),
+            };
             let set_failed = {
                 let mut map = mgr.transfers.write().await;
                 match map.get_mut(&id_spawn) {
@@ -92,7 +103,7 @@ pub async fn spawn_send(
                         ) =>
                     {
                         t.status = Status::Failed;
-                        t.error = Some(e.to_string());
+                        t.error = Some(message.clone());
                         t.updated_at = now_secs();
                         true
                     }
@@ -100,15 +111,42 @@ pub async fn spawn_send(
                 }
             };
             if set_failed {
+                mgr.metrics.transfer_failed();
                 error!("transfer {id_spawn} failed: {e:#}");
                 mgr.emit_update(&id_spawn, "transfer_failed").await;
             } else {
                 info!("transfer {id_spawn} stopped: {e:#}");
             }
+        } else {
+            mgr.metrics.transfer_finished();
+            mgr.metrics.add_sent(offer.size);
         }
     });
 
     Ok(id)
+}
+
+/// One last look at the offer status, used to explain a stopped upload.
+async fn remote_status(mgr: &TransferManager, peer: &Peer, id: &str) -> Option<String> {
+    let url = format!("http://{}:{}/api/v1/offer/{}", peer.addr, peer.port, id);
+    let client = reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .ok()?;
+    let shared = mgr.shared_token.read().await.clone();
+    let mut req = client.get(&url).timeout(OFFER_REQUEST_TIMEOUT);
+    if !shared.is_empty() {
+        req = req.header(TOKEN_HEADER, shared);
+    }
+    let resp = req.send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = resp.json().await.ok()?;
+    body.get("status")
+        .and_then(|s| s.as_str())
+        .map(str::to_string)
 }
 
 /// The full send lifecycle. Always removes the staged file, whatever happens.

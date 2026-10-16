@@ -19,6 +19,11 @@ desktop/gen/android/*.keystore
 # Generated Android keystores / signing
 *.keystore
 
+# Fuzzing (cargo-fuzz): corpora and crash reproductions stay local
+fuzz/artifacts/
+fuzz/corpus/
+fuzz/target/
+
 # OS noise
 .DS_Store
 Thumbs.db

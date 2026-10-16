@@ -994,6 +994,11 @@ fn validate_dir(raw: &str) -> Result<PathBuf, String> {
     Ok(canon)
 }
 
+/// Process-wide counters since startup (transfers, bytes moved).
+pub async fn api_metrics(State(state): State<AppState>) -> Response {
+    Json(state.transfers.metrics.snapshot()).into_response()
+}
+
 /// Quit this node (local requests only).
 ///
 /// A freshly installed build calls this before taking over the port, so exactly

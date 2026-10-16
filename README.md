@@ -79,7 +79,7 @@ make desktop-dev     # run in dev mode (cargo tauri dev)
 make desktop-build   # release bundles -> target/release/bundle/ (deb / rpm / AppImage)
 ```
 
-Requires the Tauri Linux dependencies (see [docs/DESKTOP_LINUX.md](docs/DESKTOP_LINUX.md)).
+Requires the Tauri Linux dependencies (see [docs/DESKTOP.md](docs/DESKTOP.md)).
 The app starts the backend inside the process, opens a native window pointing at
 the local UI, and adds a tray icon (Open / Downloads / Quit); quitting shuts the
 backend down gracefully.
@@ -483,7 +483,7 @@ landrop/
   demo/
     image1.png          # README hero screenshot
   docs/
-    DESKTOP_LINUX.md    Tauri deps, build and troubleshooting
+    DESKTOP.md          Tauri Linux deps + Android build steps
     screenshots/        UI captures used in this README
 ```
 

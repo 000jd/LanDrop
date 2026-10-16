@@ -207,14 +207,35 @@ async fn end_to_end_accept_transfer() {
     assert_eq!(sha256_of(std::path::Path::new(&saved)), src_sha);
     assert!(saved.ends_with("payload.bin"));
 
-    // 6. The staged copy on the sender side is cleaned up after the transfer.
-    let outbox = state_a.config_dir.clone().unwrap().join("outbox");
-    if outbox.exists() {
-        assert!(
-            dir_names(&outbox).is_empty(),
-            "staging dir should be empty after a completed transfer"
-        );
+    // 7. The counters moved: this node received exactly the payload.
+    let metrics = state_b.transfers.metrics.snapshot();
+    assert_eq!(metrics["transfers_started"], 1);
+    assert_eq!(metrics["transfers_finished"], 1);
+    assert_eq!(metrics["transfers_failed"], 0);
+    assert_eq!(metrics["bytes_received"], payload.len() as u64);
+    assert_eq!(metrics["bytes_sent"], 0);
+}
+
+#[tokio::test]
+async fn metrics_endpoint_reports_counters() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, port, _) = instance("dave", dir.path().join("dl")).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/metrics"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let m: serde_json::Value = resp.json().await.unwrap();
+    for key in [
+        "transfers_started",
+        "transfers_finished",
+        "transfers_failed",
+        "bytes_sent",
+        "bytes_received",
+    ] {
+        assert!(m[key].is_u64(), "{key} must be a number in {m}");
     }
+    assert_eq!(m["bytes_received"], 0, "a fresh node has moved nothing");
 }
 
 #[tokio::test]

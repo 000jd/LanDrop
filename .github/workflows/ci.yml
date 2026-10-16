@@ -26,6 +26,11 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: cargo test
         run: cargo test
+      - name: desktop entries are valid
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y desktop-file-utils
+          ./scripts/desktop-file-validate.sh
 
   cross-platform:
     name: tests (${{ matrix.os }})

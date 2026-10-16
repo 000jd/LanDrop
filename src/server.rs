@@ -85,6 +85,7 @@ pub fn router(state: AppState) -> Router {
             post(handlers::api_reject_transfer),
         )
         .route("/api/events", get(handlers::api_events_sse))
+        .route("/api/metrics", get(handlers::api_metrics))
         .route("/api/settings", get(handlers::api_get_settings))
         .route("/api/settings", post(handlers::api_save_settings))
         // Local-only helpers used by the desktop app: retire an older copy and

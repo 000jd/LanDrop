@@ -255,6 +255,8 @@ pub struct TransferManager {
     /// When true, incoming offers show an Accept / Reject notification instead
     /// of requiring the full window. Enabled by [`crate::app::start_node`].
     pub interactive_prompts: Arc<AtomicBool>,
+    /// Process-wide counters (see [`crate::metrics`]).
+    pub metrics: Arc<crate::metrics::Metrics>,
 }
 
 impl TransferManager {
@@ -271,6 +273,7 @@ impl TransferManager {
             shared_token: Arc::new(RwLock::new(String::new())),
             peers,
             interactive_prompts: Arc::new(AtomicBool::new(false)),
+            metrics: Arc::new(crate::metrics::Metrics::new()),
         }
     }
 

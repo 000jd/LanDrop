@@ -322,37 +322,67 @@ fn ip_pref(a: IpAddr) -> u8 {
     }
 }
 
+/// One address bound to one interface, as reported by the OS.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IfaceAddr {
+    pub name: String,
+    pub addr: IpAddr,
+}
+
+/// Where interface addresses come from.
+///
+/// A seam for tests: the real implementation reads `getifaddrs`, tests feed
+/// fabricated interfaces (loopback, container bridges, link-local, VPNs) and
+/// check the filtering without depending on the host's network.
+pub trait InterfaceSource {
+    fn addresses(&self) -> Vec<IfaceAddr>;
+}
+
+/// The host's own interfaces.
+pub struct SystemInterfaces;
+
+impl InterfaceSource for SystemInterfaces {
+    fn addresses(&self) -> Vec<IfaceAddr> {
+        let Ok(ifaces) = nix::ifaddrs::getifaddrs() else {
+            return Vec::new();
+        };
+        ifaces
+            .filter_map(|iface| {
+                let addr = iface.address?;
+                let sa = addr.as_sockaddr_in()?;
+                Some(IfaceAddr {
+                    name: iface.interface_name,
+                    addr: IpAddr::V4(sa.ip()),
+                })
+            })
+            .collect()
+    }
+}
+
+/// Non-loopback IPv4 addresses on real (non-virtual) interfaces, best first.
+pub fn usable_ipv4_addrs_from(source: &dyn InterfaceSource) -> Vec<IpAddr> {
+    let mut out: Vec<IpAddr> = source
+        .addresses()
+        .into_iter()
+        .filter(|iface| !skip_iface(&iface.name))
+        .map(|iface| iface.addr)
+        .filter(|addr| match addr {
+            IpAddr::V4(v) => !v.is_loopback() && !v.is_link_local() && !v.is_unspecified(),
+            IpAddr::V6(_) => false,
+        })
+        .collect();
+    out.sort_by_key(|a| ip_pref(*a));
+    out.dedup();
+    out
+}
+
 /// Non-loopback IPv4 addresses on real (non-virtual) interfaces.
 pub fn local_ipv4_addrs() -> Vec<IpAddr> {
     usable_ipv4_addrs()
 }
 
 fn usable_ipv4_addrs() -> Vec<IpAddr> {
-    let Ok(ifaces) = nix::ifaddrs::getifaddrs() else {
-        return Vec::new();
-    };
-    let mut out: Vec<IpAddr> = ifaces
-        .filter_map(|iface| {
-            if skip_iface(&iface.interface_name) {
-                return None;
-            }
-            let addr = iface.address?;
-            match addr.as_sockaddr_in() {
-                Some(sa) => {
-                    let ip = sa.ip();
-                    if ip.is_loopback() || ip.is_link_local() {
-                        None
-                    } else {
-                        Some(IpAddr::V4(ip))
-                    }
-                }
-                None => None,
-            }
-        })
-        .collect();
-    out.sort_by_key(|a| ip_pref(*a));
-    out.dedup();
-    out
+    usable_ipv4_addrs_from(&SystemInterfaces)
 }
 
 /// Virtual / container interfaces we should not advertise on.

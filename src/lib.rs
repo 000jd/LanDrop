@@ -30,6 +30,7 @@ pub mod config;
 pub mod discovery;
 pub mod events;
 pub mod instance;
+pub mod metrics;
 pub mod notify;
 pub mod peers;
 pub mod protocol;

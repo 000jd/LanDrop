@@ -106,6 +106,7 @@ where
         .await
         .with_context(|| format!("create download dir {}", dest_dir.display()))?;
     let tmp = dest_dir.join(format!(".{filename}.part-{}", uuid::Uuid::new_v4()));
+    mgr.metrics.transfer_started();
 
     let result = async {
         let mut file = tokio::fs::File::create(&tmp)
@@ -231,6 +232,8 @@ where
     match result {
         Ok(final_path) => {
             info!("received {} -> {}", filename, final_path.display());
+            mgr.metrics.transfer_finished();
+            mgr.metrics.add_received(expected_size);
             mgr.with_transfer(id, |t| {
                 if t.status == Status::Transferring {
                     t.status = Status::Completed;
@@ -256,6 +259,7 @@ where
         }
         Err(e) => {
             let _ = tokio::fs::remove_file(&tmp).await;
+            mgr.metrics.transfer_failed();
             warn!("receive failed: {e:#}");
             if notify_on {
                 crate::notify::progress(

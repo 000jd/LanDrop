@@ -1,0 +1,39 @@
+[package]
+name = "landrop-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+
+[dependencies.landrop]
+path = ".."
+
+[[bin]]
+name = "sanitize_filename"
+path = "fuzz_targets/sanitize_filename.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_peer_addr"
+path = "fuzz_targets/parse_peer_addr.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_json"
+path = "fuzz_targets/wire_json.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1

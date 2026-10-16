@@ -1,5 +1,9 @@
 [workspace]
 members = ["desktop"]
+# Fuzz targets live in `fuzz/` with their own manifest and are driven by
+# `cargo fuzz` (nightly only); keep them out of normal builds, tests and the
+# MSRV job.
+exclude = ["fuzz"]
 
 [package]
 name = "landrop"

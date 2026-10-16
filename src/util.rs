@@ -15,10 +15,14 @@ pub fn spawn_detached(cmd: &mut Command) -> io::Result<()> {
 }
 
 /// Free bytes available on the filesystem containing `path` (0 when unknown).
+///
+/// `saturating_mul`: on a 32-bit target a huge filesystem can make the two
+/// factors overflow `u64` in theory, and a saturated number is a much better
+/// answer than a wrapped one when we use it as a "is there room?" guard.
 #[cfg(unix)]
 pub fn free_space(path: &Path) -> u64 {
     nix::sys::statvfs::statvfs(path)
-        .map(|s| s.blocks_available() * s.fragment_size())
+        .map(|s| s.blocks_available().saturating_mul(s.fragment_size()))
         .unwrap_or(0)
 }
 
@@ -32,7 +36,10 @@ pub fn free_space(_path: &Path) -> u64 {
 pub fn disk_usage(path: &Path) -> Option<(u64, u64)> {
     nix::sys::statvfs::statvfs(path).ok().map(|s| {
         let unit = s.fragment_size();
-        (s.blocks_available() * unit, s.blocks() * unit)
+        (
+            s.blocks_available().saturating_mul(unit),
+            s.blocks().saturating_mul(unit),
+        )
     })
 }
 
@@ -71,5 +78,13 @@ mod tests {
         let (free, total) = disk_usage(Path::new("/")).expect("root filesystem is readable");
         assert!(total > 0);
         assert!(free <= total);
+    }
+
+    /// The guarded arithmetic must never wrap, whatever the OS reports.
+    #[test]
+    fn space_maths_saturates_instead_of_wrapping() {
+        let unit = 4096u64;
+        assert_eq!(u64::MAX.saturating_mul(unit), u64::MAX);
+        assert_eq!(0u64.saturating_mul(unit), 0);
     }
 }
