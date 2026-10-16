@@ -55,6 +55,12 @@ icons:
 
 # --- Linux desktop integration (user-local, no sudo) ----------------------
 
+# Install the desktop app (Tauri window) for the current user — no root needed.
+# Writes ~/.local/bin/landrop-desktop plus a .desktop entry that shadows the
+# distribution package in the application menu.
+install-app:
+	./scripts/install-desktop-app.sh
+
 install-desktop: build
 	@echo "==> Installing LanDrop to $(PREFIX)"
 	mkdir -p $(BINDIR) $(APPSDIR) $(ICONDIR) $(SVGDIR) $(AUTOSTART)
