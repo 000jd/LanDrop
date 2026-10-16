@@ -151,6 +151,51 @@ struct Backend {
     already_running: bool,
 }
 
+/// Send dropped paths through the node this process runs (or is attached to).
+///
+/// The node walks folders, stages every file and queues one transfer per device
+/// the UI has selected; this process only reports the outcome.
+#[cfg(desktop)]
+async fn send_dropped_paths(app: &tauri::AppHandle, paths: Vec<String>) {
+    let port = {
+        let state = app.state::<NodeState>();
+        let node = state.node.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        match node {
+            Some(node) => node.addr.port(),
+            None => {
+                // Attached to a node another process runs: use the port it
+                // recorded for this config dir.
+                let dir = node_options(app)
+                    .ok()
+                    .and_then(|options| options.config_dir)
+                    .map(std::path::PathBuf::from);
+                match landrop::instance::live_instance_in(dir.as_deref()) {
+                    Some(info) => info.port,
+                    None => {
+                        warn!("drop ignored: no backend port");
+                        return;
+                    }
+                }
+            }
+        }
+    };
+
+    match tokio::task::spawn_blocking(move || landrop::instance::request_send_path(port, &paths))
+        .await
+    {
+        Ok(Some(200)) => info!("dropped paths queued for transfer"),
+        Ok(Some(409)) => {
+            warn!("drop ignored: choose a device in the app first");
+            landrop::notify::notify(
+                "LanDrop — nothing sent",
+                "Choose the device(s) you want in the app window, then drop the files again.",
+            );
+        }
+        Ok(Some(status)) => warn!("drop rejected with HTTP {status}"),
+        other => warn!("drop failed: {other:?}"),
+    }
+}
+
 /// Wait (bounded) until nothing answers on `port` any more.
 fn wait_for_port_free(port: u16, timeout: std::time::Duration) {
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
@@ -499,10 +544,6 @@ pub fn run() {
                 .title("LanDrop");
             #[cfg(desktop)]
             let builder = builder
-                // Let the webview handle HTML5 drops itself: Tauri's own drag &
-                // drop interception would swallow them, so dragging files onto
-                // the window would do nothing.
-                .disable_drag_drop_handler()
                 // Embedded 64x64 RGBA from `assets/icon-64.rgba` (regenerate with
                 // `make icons`): a fixed asset, so failing here means the platform
                 // rejected it and a clear panic beats a window without a mark.
@@ -521,9 +562,28 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             #[cfg(desktop)]
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                // Files and folders dropped on the window arrive here as paths.
+                // The webview is a remote page, so instead of tunnelling data
+                // through JavaScript the node walks the paths itself.
+                tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
+                    let paths: Vec<String> = paths
+                        .iter()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect();
+                    if paths.is_empty() {
+                        return;
+                    }
+                    let handle = window.app_handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        send_dropped_paths(&handle, paths).await;
+                    });
+                }
+                _ => {}
             }
             #[cfg(not(desktop))]
             let _ = (window, event);

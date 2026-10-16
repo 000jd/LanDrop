@@ -304,6 +304,20 @@ function togglePeer(p) {
   lastPeersKey = ""; // force a rebuild so the highlight updates
   renderPeers();
   updateSendTargetLabel();
+  publishSelection();
+}
+
+/// Tell the node which devices are selected. The desktop window cannot read this
+/// state from Rust, so dropped files are sent to whatever is published here.
+function publishSelection() {
+  const targets = state.peers
+    .filter((p) => state.selectedPeerIds.includes(p.id))
+    .map((p) => `${p.addr}:${p.port}`);
+  api("/api/ui/selection", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ targets }),
+  }).catch(() => {});
 }
 
 function updateSendTargetLabel() {
@@ -1081,6 +1095,7 @@ function init() {
   loadPeers();
   loadTransfers();
   connectEvents();
+  publishSelection();
 }
 
 document.addEventListener("DOMContentLoaded", init);

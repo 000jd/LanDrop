@@ -37,6 +37,9 @@ pub struct AppState {
     pub shutdown: Arc<std::sync::OnceLock<tokio::sync::watch::Sender<bool>>>,
     /// Desktop hook raising the app window (`POST /api/window/focus`).
     pub on_focus: Option<crate::app::FocusHook>,
+    /// Devices the local UI has selected. The desktop window cannot expose its
+    /// state to Rust, so a native file drop sends to whatever is selected here.
+    pub ui_selection: Arc<RwLock<Vec<String>>>,
     /// Explicit config dir when the node runs with a custom one (staging and
     /// instance bookkeeping live there).
     pub config_dir: Option<PathBuf>,
@@ -53,6 +56,7 @@ impl AppState {
             events,
             shutdown: Arc::new(std::sync::OnceLock::new()),
             on_focus: None,
+            ui_selection: Arc::new(RwLock::new(Vec::new())),
             config_dir: None,
         }
     }
@@ -92,6 +96,10 @@ pub fn router(state: AppState) -> Router {
         // raise the window this process already has.
         .route("/api/quit", post(handlers::api_quit))
         .route("/api/window/focus", post(handlers::api_focus))
+        // Local-only: the UI tells the node which devices are selected, and the
+        // desktop window sends dropped paths to them.
+        .route("/api/ui/selection", post(handlers::api_ui_selection))
+        .route("/api/send-path", post(handlers::api_send_path))
         .route("/api/downloads/open", post(handlers::api_open_downloads))
         // Folder picker (machine-local): list subdirectories / create one.
         .route("/api/fs/list", get(handlers::api_list_dirs))

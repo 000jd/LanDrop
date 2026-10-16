@@ -127,6 +127,18 @@ pub fn acquire(dir: Option<&Path>) -> Result<Option<InstanceLock>> {
 /// and to ask it to quit or raise its window — not a general HTTP client (that
 /// would drag hyper + TLS into the core binary for one JSON field).
 fn http_request(port: u16, method: &str, path: &str) -> Option<(u16, String)> {
+    http_request_with(port, method, path, None)
+}
+
+/// Like [`http_request`], with an optional JSON body (used to hand dropped paths
+/// to the node). Still bounded and short-timeout: this only ever talks to a
+/// local LanDrop.
+fn http_request_with(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+) -> Option<(u16, String)> {
     use std::io::{Read, Write};
     /// `/api/info` is a few hundred bytes; never buffer more than this, in case
     /// something other than LanDrop is listening on that port.
@@ -136,8 +148,10 @@ fn http_request(port: u16, method: &str, path: &str) -> Option<(u16, String)> {
     let mut stream =
         std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(400)).ok()?;
     let _ = stream.set_read_timeout(Some(Duration::from_millis(800)));
+    let payload = body.unwrap_or("");
     let request = format!(
-        "{method} {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        "{method} {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+        payload.len()
     );
     stream.write_all(request.as_bytes()).ok()?;
     let mut raw = String::new();
@@ -176,6 +190,14 @@ pub fn request_focus(port: u16) -> bool {
         http_request(port, "POST", "/api/window/focus"),
         Some((200, _))
     )
+}
+
+/// Ask a node to send these local paths (files or folders) to whatever device(s)
+/// its UI has selected. Returns the HTTP status so the caller can tell "no device
+/// selected" (409) from a real failure.
+pub fn request_send_path(port: u16, paths: &[String]) -> Option<u16> {
+    let body = serde_json::json!({ "paths": paths }).to_string();
+    http_request_with(port, "POST", "/api/send-path", Some(&body)).map(|(status, _)| status)
 }
 
 /// True when a node reports a transfer that is still in flight.

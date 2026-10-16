@@ -37,6 +37,25 @@ pub struct Offer {
     pub rel_path: Option<String>,
 }
 
+/// Streaming SHA-256 of a file (lower-case hex), used when a sender hands over a
+/// path instead of uploading bytes through the webview.
+pub fn sha256_file(path: &std::path::Path) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 /// How deep a sender-provided relative path may go.
 const MAX_REL_DEPTH: usize = 16;
 

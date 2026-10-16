@@ -1087,6 +1087,244 @@ pub async fn api_focus(
     }
 }
 
+/// Cap on files collected from dropped folders in one request.
+const MAX_DROPPED_FILES: usize = 500;
+
+/// Remember which devices the local UI has selected (see [`api_send_path`]).
+pub async fn api_ui_selection(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if !is_local_peer(&addr) {
+        return err(
+            StatusCode::FORBIDDEN,
+            "the selection is only settable from this machine",
+        );
+    }
+    let targets: Vec<String> = body["targets"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .take(32)
+                .collect()
+        })
+        .unwrap_or_default();
+    *state.ui_selection.write().await = targets;
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// Send files and folders **by path** (local requests only).
+///
+/// A browser cannot hand a path to the server, but an operating-system drop event
+/// can, so the desktop window forwards dropped paths here and the node does the
+/// work: folders are walked (symlinks skipped), relative paths are preserved for
+/// the receiver, and every file is staged, hashed and queued as its own transfer
+/// — one staged copy per device, since each transfer removes its own.
+pub async fn api_send_path(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if !is_local_peer(&addr) {
+        return err(
+            StatusCode::FORBIDDEN,
+            "sending by path is only available from this machine",
+        );
+    }
+    let roots: Vec<PathBuf> = body["paths"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|v| v.as_str())
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .take(64)
+                .collect()
+        })
+        .unwrap_or_default();
+    if roots.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "paths are required");
+    }
+
+    let targets: Vec<String> = match body["targets"].as_array() {
+        Some(list) => list
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        None => state.ui_selection.read().await.clone(),
+    };
+    if targets.is_empty() {
+        return err(StatusCode::CONFLICT, "no device selected");
+    }
+
+    let (files, skipped) = collect_sendable(&roots, MAX_DROPPED_FILES);
+
+    let mut peers = Vec::new();
+    for target in &targets {
+        if let Some(peer) = state.peers.find(target).await {
+            peers.push(peer);
+            continue;
+        }
+        let my_port = *state.transfers.my_port.read().await;
+        match crate::peers::parse_peer_addr_with(target, my_port, true) {
+            Ok(socket) => peers.push(crate::peers::Peer {
+                id: format!("manual-{socket}"),
+                name: socket.ip().to_string(),
+                addr: socket.ip().to_string(),
+                port: socket.port(),
+                source: "manual".into(),
+            }),
+            Err(e) => return err(StatusCode::BAD_REQUEST, format!("unknown target: {e}")),
+        }
+    }
+
+    let dir = staging_dir_for(state.config_dir.as_deref());
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to create staging dir: {e}"),
+        );
+    }
+
+    let mut queued = 0usize;
+    let mut errors: Vec<String> = Vec::new();
+    for (path, rel_dir) in &files {
+        let filename = crate::protocol::sanitize_filename(
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unnamed"),
+        );
+        let size = match tokio::fs::metadata(path).await {
+            Ok(m) if m.is_file() => m.len(),
+            Ok(_) => {
+                errors.push(format!("{filename}: not a regular file"));
+                continue;
+            }
+            Err(e) => {
+                errors.push(format!("{filename}: {e}"));
+                continue;
+            }
+        };
+        let sha = match crate::protocol::sha256_file(path) {
+            Ok(sha) => Some(sha),
+            Err(e) => {
+                errors.push(format!("{filename}: {e}"));
+                continue;
+            }
+        };
+        for peer in &peers {
+            let staged = match stage_by_link_or_copy(path, &dir).await {
+                Ok(p) => p,
+                Err(e) => {
+                    errors.push(format!("{filename}: {e}"));
+                    break;
+                }
+            };
+            match crate::transfer::sender::spawn_send_in(
+                rel_dir.clone(),
+                &state.transfers,
+                peer.clone(),
+                filename.clone(),
+                size,
+                sha.clone(),
+                staged.clone(),
+            )
+            .await
+            {
+                Ok(_) => queued += 1,
+                Err(e) => {
+                    cleanup_file(&staged).await;
+                    errors.push(format!("{filename} → {}: {e}", peer.name));
+                }
+            }
+        }
+    }
+
+    Json(json!({
+        "queued": queued,
+        "files": files.len(),
+        "skipped": skipped,
+        "devices": peers.len(),
+        "errors": errors,
+    }))
+    .into_response()
+}
+
+/// Stage a file for upload: a hard link when the filesystem allows it (no data
+/// copied at all), otherwise a real copy.
+async fn stage_by_link_or_copy(
+    src: &std::path::Path,
+    dir: &std::path::Path,
+) -> std::io::Result<PathBuf> {
+    let name = src.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    let staged = dir.join(format!(".{name}.send-{}", uuid::Uuid::new_v4()));
+    if std::fs::hard_link(src, &staged).is_ok() {
+        return Ok(staged);
+    }
+    tokio::fs::copy(src, &staged).await?;
+    Ok(staged)
+}
+
+/// Collect the files under `roots`: folders are walked, symlinks skipped, and
+/// each entry carries the relative directory the receiver should recreate.
+fn collect_sendable(roots: &[PathBuf], limit: usize) -> (Vec<(PathBuf, Option<String>)>, usize) {
+    let mut out: Vec<(PathBuf, Option<String>)> = Vec::new();
+    let mut skipped = 0usize;
+    for root in roots {
+        let Ok(meta) = std::fs::symlink_metadata(root) else {
+            skipped += 1;
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            skipped += 1;
+            continue;
+        }
+        if meta.is_file() {
+            out.push((root.clone(), None));
+            continue;
+        }
+        let base = root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("folder")
+            .to_string();
+        let mut stack = vec![(root.clone(), base)];
+        while let Some((dir, rel)) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                skipped += 1;
+                continue;
+            };
+            for entry in entries.flatten() {
+                if out.len() >= limit {
+                    skipped += 1;
+                    continue;
+                }
+                let Ok(kind) = entry.file_type() else {
+                    skipped += 1;
+                    continue;
+                };
+                if kind.is_symlink() {
+                    continue;
+                }
+                let path = entry.path();
+                if kind.is_dir() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    stack.push((path, format!("{rel}/{name}")));
+                } else if kind.is_file() {
+                    out.push((path, Some(rel.clone())));
+                }
+            }
+        }
+    }
+    (out, skipped)
+}
+
 /// Persist the current config next to the node's config file (honours a
 /// custom `--config-dir`, falling back to the default location).
 ///

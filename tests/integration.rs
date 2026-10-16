@@ -345,6 +345,116 @@ async fn folder_sends_recreate_the_tree_and_refuse_escapes() {
 }
 
 #[tokio::test]
+async fn send_path_walks_folders_and_uses_the_published_selection() {
+    // This is exactly what the desktop window does on a native drop: it forwards
+    // the paths and lets the node walk them, sending to whatever the UI has
+    // published as selected.
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+    let node_a = landrop::app::start_node(landrop::app::NodeOptions {
+        port: Some(0),
+        downloads: Some(dir_a.path().join("dl").to_string_lossy().into_owned()),
+        config_dir: Some(dir_a.path().to_string_lossy().into_owned()),
+        no_mdns: true,
+        port_scan: false,
+        ..landrop::app::NodeOptions::default()
+    })
+    .await
+    .unwrap();
+    let node_b = landrop::app::start_node(landrop::app::NodeOptions {
+        port: Some(0),
+        downloads: Some(dir_b.path().join("dl").to_string_lossy().into_owned()),
+        config_dir: Some(dir_b.path().to_string_lossy().into_owned()),
+        no_mdns: true,
+        port_scan: false,
+        ..landrop::app::NodeOptions::default()
+    })
+    .await
+    .unwrap();
+    *node_b.state.transfers.auto_accept.write().await = true;
+
+    // A dropped folder with a subfolder, plus a loose file: two files total.
+    let drop_root = dir_a.path().join("holiday");
+    std::fs::create_dir_all(drop_root.join("day1")).unwrap();
+    std::fs::write(drop_root.join("day1/beach.jpg"), b"jpeg-ish bytes").unwrap();
+    let loose = dir_a.path().join("loose.txt");
+    std::fs::write(&loose, b"loose").unwrap();
+
+    let client = reqwest::Client::new();
+    let base = node_a.local_url();
+    let resp = client
+        .post(format!("{base}/api/ui/selection"))
+        .json(&serde_json::json!({ "targets": [format!("127.0.0.1:{}", node_b.addr.port())] }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "selection rejected: {resp:?}");
+
+    let resp = client
+        .post(format!("{base}/api/send-path"))
+        .json(&serde_json::json!({
+            "paths": [drop_root.to_string_lossy(), loose.to_string_lossy()],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let summary: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(summary["queued"], 2, "summary: {summary}");
+    assert_eq!(summary["files"], 2, "summary: {summary}");
+    assert_eq!(summary["devices"], 1, "summary: {summary}");
+
+    // Both files arrive, and the dropped folder keeps its shape.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let done = node_b
+            .state
+            .transfers
+            .list()
+            .await
+            .iter()
+            .filter(|t| t.status == "completed")
+            .count();
+        if done == 2 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "files did not arrive in time"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+    assert_eq!(
+        std::fs::read(dir_b.path().join("dl/holiday/day1/beach.jpg")).unwrap(),
+        b"jpeg-ish bytes"
+    );
+    assert_eq!(
+        std::fs::read(dir_b.path().join("dl/loose.txt")).unwrap(),
+        b"loose"
+    );
+
+    // Without a selection and without explicit targets, the node refuses instead
+    // of guessing a device.
+    let resp = client
+        .post(format!("{base}/api/ui/selection"))
+        .json(&serde_json::json!({ "targets": [] }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let resp = client
+        .post(format!("{base}/api/send-path"))
+        .json(&serde_json::json!({ "paths": [loose.to_string_lossy()] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
+
+    node_a.shutdown();
+    node_b.shutdown();
+}
+
+#[tokio::test]
 async fn metrics_endpoint_reports_counters() {
     let dir = tempfile::tempdir().unwrap();
     let (_, port, _) = instance("dave", dir.path().join("dl")).await;
