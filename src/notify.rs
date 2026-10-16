@@ -268,6 +268,10 @@ pub fn prompt_incoming(mgr: TransferManager, id: String, sender: String, filenam
             let decision = tokio::task::spawn_blocking(move || ask_user(&sender_c, &filename_c))
                 .await
                 .unwrap_or(Decision::Ignored);
+            tracing::info!(
+                "offer {id}: prompt decided {decision:?} (notification / zenity / kdialog, \
+                 whichever answered first)"
+            );
 
             match decision {
                 Decision::Accept => {
@@ -319,6 +323,7 @@ fn notify_send_actions(body: &str) -> Option<Decision> {
             return None;
         }
         let icon = notification_icon();
+        let started = std::time::Instant::now();
         let out = Command::new("notify-send")
             .args([
                 "-a",
@@ -339,16 +344,26 @@ fn notify_send_actions(body: &str) -> Option<Decision> {
             ])
             .output()
             .ok()?;
+        let elapsed = started.elapsed();
         if !out.status.success() && out.stdout.is_empty() {
             return None;
         }
         let s = String::from_utf8_lossy(&out.stdout)
             .trim()
             .to_ascii_lowercase();
+        // A person cannot click within a few hundred milliseconds: an immediate
+        // answer means the daemon echoed a default (some do when actions are not
+        // supported). Never accept a file on that basis.
+        let deliberate = elapsed >= std::time::Duration::from_millis(300);
         match s.as_str() {
-            "accept" => Some(Decision::Accept),
-            "reject" => Some(Decision::Reject),
-            _ => Some(Decision::Ignored),
+            "accept" if deliberate => Some(Decision::Accept),
+            "reject" if deliberate => Some(Decision::Reject),
+            _ => {
+                tracing::info!(
+                    "notification prompt answered {s:?} after {elapsed:?}; treating as not accepted"
+                );
+                Some(Decision::Ignored)
+            }
         }
     }
     #[cfg(not(target_os = "linux"))]
@@ -362,6 +377,7 @@ fn notify_send_actions(body: &str) -> Option<Decision> {
 fn zenity_question(body: &str) -> Option<Decision> {
     #[cfg(target_os = "linux")]
     {
+        let started = std::time::Instant::now();
         let status = Command::new("zenity")
             .args([
                 "--question",
@@ -374,9 +390,12 @@ fn zenity_question(body: &str) -> Option<Decision> {
             ])
             .status()
             .ok()?;
+        let elapsed = started.elapsed();
+        let deliberate = elapsed >= std::time::Duration::from_millis(300);
         match status.code() {
-            Some(0) => Some(Decision::Accept),
-            Some(1) => Some(Decision::Reject),
+            Some(0) if deliberate => Some(Decision::Accept),
+            Some(1) if deliberate => Some(Decision::Reject),
+            // Timeout (5), a broken dialog, or an answer too fast to be a click.
             _ => Some(Decision::Ignored),
         }
     }
@@ -391,6 +410,7 @@ fn zenity_question(body: &str) -> Option<Decision> {
 fn kdialog_yesno(body: &str) -> Option<Decision> {
     #[cfg(target_os = "linux")]
     {
+        let started = std::time::Instant::now();
         let status = Command::new("timeout")
             .args([
                 "110",
@@ -406,11 +426,15 @@ fn kdialog_yesno(body: &str) -> Option<Decision> {
             ])
             .status()
             .ok()?;
+        let elapsed = started.elapsed();
+        let deliberate = elapsed >= std::time::Duration::from_millis(300);
         match status.code() {
-            Some(0) => Some(Decision::Accept),
-            Some(1) => Some(Decision::Reject),
+            Some(0) if deliberate => Some(Decision::Accept),
+            Some(1) if deliberate => Some(Decision::Reject),
             // 124 = timed out; 127 = kdialog not installed; 2 = dialog error.
-            // Anything but an explicit "No" must not auto-reject the transfer.
+            // Anything but an explicit answer must not decide the transfer, and
+            // an answer that arrives as fast as the process starts was not a
+            // click either.
             _ => Some(Decision::Ignored),
         }
     }

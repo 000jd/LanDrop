@@ -10,6 +10,8 @@ const state = {
   transfers: [],
   selectedPeerId: null,
   selectedFile: null,
+  /// Files queued for the next send (one transfer each).
+  selectedFiles: [],
 };
 
 // ---------------------------------------------------------------------------
@@ -52,6 +54,8 @@ function fmtBuild(unixSecs) {
 
 const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 
+// Upper bound per batch: one transfer per file, and each one is a real upload.
+const MAX_BATCH_FILES = 32;
 // Quote-safe: safe for both text and attribute contexts.
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ESCAPES[c]);
@@ -174,9 +178,54 @@ async function loadTransfers() {
   try {
     state.transfers = await api("/api/transfers");
     renderAll();
+    updateAcceptAll();
   } catch (e) {
     toast("Failed to load transfers: " + e.message, "error");
   }
+}
+
+/// The waiting incoming offers, in list order.
+function waitingIncoming() {
+  return state.transfers.filter((t) => t.direction === "incoming" && t.status === "waiting");
+}
+
+/// One click to accept a whole batch (multi-file sends arrive as one offer per
+/// file). Uses the configured download folder, so the per-file "ask where to
+/// save" prompt is deliberately skipped here.
+async function acceptAllIncoming() {
+  const waiting = waitingIncoming();
+  const btn = $("acceptAllBtn");
+  if (btn) btn.disabled = true;
+  let ok = 0;
+  for (const t of waiting) {
+    try {
+      await api(`/api/transfers/${t.id}/accept`, { method: "POST" });
+      ok++;
+    } catch {
+      // Keep going: one bad offer must not stop the rest.
+    }
+  }
+  if (btn) btn.disabled = false;
+  toast(ok === waiting.length ? `Accepted ${ok} files` : `Accepted ${ok} of ${waiting.length}`, ok ? "success" : "error");
+  await loadTransfers();
+}
+
+/// Show the "Accept all" button only for real batches (two or more files).
+function updateAcceptAll() {
+  let btn = $("acceptAllBtn");
+  if (!btn) {
+    btn = document.createElement("button");
+    btn.id = "acceptAllBtn";
+    btn.type = "button";
+    btn.className = "btn accept-all";
+    btn.hidden = true;
+    btn.onclick = acceptAllIncoming;
+    const list = $("incomingList");
+    list.parentNode.insertBefore(btn, list);
+  }
+  const waiting = waitingIncoming();
+  btn.hidden = waiting.length < 2;
+  btn.textContent = `Accept all ${waiting.length} files`;
 }
 
 // Debounced variants used by SSE handlers so bursts of events are batched.
@@ -429,9 +478,9 @@ function updateBadge() {
 // Actions
 // ---------------------------------------------------------------------------
 
-async function sendFile() {
-  const file = state.selectedFile;
-  if (!file) return;
+async function sendFiles() {
+  const files = state.selectedFiles.slice();
+  if (files.length === 0) return;
   const manual = $("manualAddr").value.trim();
   const p = state.peers.find((x) => x.id === state.selectedPeerId);
   // Prefer the selected device. The manual box is only a fallback (and for Add).
@@ -440,22 +489,36 @@ async function sendFile() {
 
   const btn = $("sendBtn");
   btn.disabled = true;
-  btn.textContent = "Uploading…";
+  const failed = [];
   try {
-    const fd = new FormData();
-    fd.append("target", target);
-    fd.append("file", file, file.name);
-    const data = await api("/api/send", { method: "POST", body: fd });
-    toast(`Transfer started (${data.transfer_id.slice(0, 8)}…)`, "success");
-    // Only clear the picker if the user did not select another file meanwhile.
-    if (state.selectedFile === file) {
-      state.selectedFile = null;
-      $("fileInput").value = "";
-      renderFileChosen();
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      btn.textContent = files.length > 1 ? `Uploading ${i + 1}/${files.length}…` : "Uploading…";
+      const fd = new FormData();
+      fd.append("target", target);
+      fd.append("file", file, file.name);
+      try {
+        await api("/api/send", { method: "POST", body: fd });
+        // Drop the file from the picker as soon as it is queued, so a retry
+        // after a failure does not resend what already went through.
+        state.selectedFiles = state.selectedFiles.filter((f) => f !== file);
+      } catch (e) {
+        failed.push(`${file.name}: ${e.message}`);
+      }
     }
+    $("fileInput").value = "";
+    state.selectedFile = state.selectedFiles[0] || null;
+    renderFileChosen();
     await loadTransfers();
-  } catch (e) {
-    toast("Send failed: " + e.message, "error");
+
+    const sent = files.length - failed.length;
+    if (failed.length === 0) {
+      toast(sent === 1 ? "Transfer started" : `${sent} transfers started`, "success");
+    } else if (sent === 0) {
+      toast(`Send failed: ${failed[0]}`, "error");
+    } else {
+      toast(`${sent} sent, ${failed.length} failed — ${failed[0]}`, "warn", 8000);
+    }
   } finally {
     btn.disabled = false;
     btn.textContent = "Send";
@@ -602,18 +665,40 @@ async function copyLanUrl() {
 // File selection / drag & drop
 // ---------------------------------------------------------------------------
 
-function pickFile(file) {
-  state.selectedFile = file;
+function pickFiles(fileList) {
+  // One transfer per file: the same path a single file has always taken, so any
+  // mix of types and sizes works and every file gets its own progress row.
+  const incoming = Array.from(fileList || []).filter((f) => f && f.size >= 0 && !isDirectory(f));
+  if (incoming.length === 0) return;
+  const room = MAX_BATCH_FILES - state.selectedFiles.length;
+  if (room <= 0) {
+    toast(`Up to ${MAX_BATCH_FILES} files per batch — send these first`, "warn");
+    return;
+  }
+  if (incoming.length > room) {
+    toast(`Added the first ${room} — up to ${MAX_BATCH_FILES} files per batch`, "warn");
+  }
+  state.selectedFiles = state.selectedFiles.concat(incoming.slice(0, room));
+  state.selectedFile = state.selectedFiles[0] || null;
   renderFileChosen();
   updateSendTargetLabel();
 }
 
+/// Dropped folders arrive as zero-byte files with a directory entry behind them.
+function isDirectory(file) {
+  const entry = file._entry || null;
+  return Boolean(entry && entry.isDirectory);
+}
+
 function renderFileChosen() {
-  const f = state.selectedFile;
-  $("fileChosen").hidden = !f;
-  if (f) {
-    $("chosenName").textContent = f.name;
-    $("chosenSize").textContent = fmtSize(f.size);
+  const files = state.selectedFiles;
+  $("fileChosen").hidden = files.length === 0;
+  if (files.length > 0) {
+    const total = files.reduce((sum, f) => sum + f.size, 0);
+    const names = files.slice(0, 3).map((f) => f.name).join(", ");
+    $("chosenName").textContent =
+      files.length === 1 ? files[0].name : `${files.length} files: ${names}${files.length > 3 ? " …" : ""}`;
+    $("chosenSize").textContent = fmtSize(total);
   }
   renderStats();
 }
@@ -628,16 +713,31 @@ function setupDropzone() {
       input.click();
     }
   };
-  input.onchange = () => { if (input.files[0]) pickFile(input.files[0]); };
+  input.multiple = true;
+  input.onchange = () => {
+    pickFiles(input.files);
+    // Reset so picking the same file again still fires `change`.
+    input.value = "";
+  };
   dz.ondragover = (e) => { e.preventDefault(); dz.classList.add("dragover"); };
   dz.ondragleave = () => dz.classList.remove("dragover");
   dz.ondrop = (e) => {
     e.preventDefault();
     dz.classList.remove("dragover");
-    const f = e.dataTransfer.files[0];
-    if (f) pickFile(f);
+    const files = Array.from(e.dataTransfer.files);
+    // Keep the directory entries around so folders are skipped rather than sent
+    // as empty files.
+    const items = e.dataTransfer.items;
+    if (items && items.length) {
+      for (let i = 0; i < items.length && i < files.length; i++) {
+        const entry = items[i].webkitGetAsEntry && items[i].webkitGetAsEntry();
+        if (entry) files[i]._entry = entry;
+      }
+    }
+    pickFiles(files);
   };
   $("clearFile").onclick = () => {
+    state.selectedFiles = [];
     state.selectedFile = null;
     // Reset the input so picking the same file again still fires `change`.
     $("fileInput").value = "";
@@ -891,7 +991,7 @@ function init() {
     const choice = await openPicker("settings", $("setDownloads").value.trim());
     if (choice && choice.action === "use") $("setDownloads").value = choice.path;
   };
-  $("sendBtn").onclick = sendFile;
+  $("sendBtn").onclick = sendFiles;
   $("addManualBtn").onclick = addManualPeer;
   $("manualAddr").oninput = updateSendTargetLabel;
   $("saveSettingsBtn").onclick = saveSettings;

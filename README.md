@@ -127,6 +127,11 @@ no install at all.
 - Live speed and time-remaining estimates while sending or receiving (e.g.
   `31% · 919 KB/s · ~31s left`), a receive-progress notification with a progress
   bar, and an always-visible activity strip so the Receive tab stays optional
+- **Multiple files at once**: pick or drop any number of files (mixed types and
+  sizes) and they are queued one after another, each with its own progress, speed
+  and time remaining. On the receiving side a batch shows one **Accept all N
+  files** button (that path uses the configured download folder, so the per-file
+  "ask where to save" prompt is skipped).
 - Any file type; streaming transfer (no full-file buffering)
 - SHA-256 integrity check; the declared size is enforced while streaming;
   collision-safe filenames (`file.txt`, `file-1.txt`, …)
@@ -549,7 +554,8 @@ never persisted.
   machine-local; accepts from other devices use the configured folder.
 - mDNS on some networks (client isolation, VPNs) is unreliable — manual peers
   cover this.
-- One file per transfer from the UI (the backend protocol supports any size).
+- One transfer per file: selecting 32 files queues 32 transfers (the per-batch
+  cap), and the receiver sees one offer per file unless they use **Accept all**.
 - The Tauri wrapper is Linux-first (works on Windows/macOS with the standard
   Tauri deps, but is only tested on Linux).
 
@@ -557,7 +563,8 @@ never persisted.
 
 - QR code of `http://<ip>:<port>` for phone onboarding
 - Transfer history persisted to disk (JSON/SQLite)
-- Multiple-file and folder drag & drop
+- Folder drag & drop (files work, folders are skipped) and true resumable
+  transfers
 - Android foreground service, so receiving survives backgrounding
 - systemd user unit
 

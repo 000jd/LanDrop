@@ -217,6 +217,72 @@ async fn end_to_end_accept_transfer() {
 }
 
 #[tokio::test]
+async fn multi_file_batch_sends_different_types_and_sizes() {
+    // One batch, three very different files: a small text file, a chunk of
+    // "image-like" binary data and a megabyte "video/archive-like" blob. The UI
+    // issues one POST /api/send per file, so this is the same path.
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+    let (state_a, _port_a, _) = instance("alice", dir_a.path().join("dl")).await;
+    let (state_b, port_b, _) = instance("bob", dir_b.path().join("dl")).await;
+    // Batch receiving is the common case: accept the whole batch at once.
+    *state_b.transfers.auto_accept.write().await = true;
+
+    let files: Vec<(&str, Vec<u8>)> = vec![
+        ("notes.txt", b"plain text, small\n".to_vec()),
+        (
+            "photo.png",
+            (0..180_000u32).map(|i| (i % 251) as u8).collect(),
+        ),
+        (
+            "archive.zip",
+            (0..1_000_000u32).map(|i| (i % 97) as u8).collect(),
+        ),
+    ];
+
+    let mut ids = Vec::new();
+    for (name, bytes) in &files {
+        let src = dir_a.path().join(name);
+        std::fs::write(&src, bytes).unwrap();
+        let sha = sha256_of(&src);
+        let id = landrop::transfer::sender::spawn_send(
+            &state_a.transfers,
+            peer_at("bob-id", port_b),
+            name.to_string(),
+            bytes.len() as u64,
+            Some(sha),
+            src,
+        )
+        .await
+        .unwrap();
+        ids.push((name.to_string(), bytes.clone(), id));
+    }
+
+    for (name, bytes, id) in ids {
+        let done = wait_for_status(&state_a, &id, "completed").await;
+        assert_eq!(done.filename, name);
+        let saved = dir_b.path().join("dl").join(&name);
+        assert!(
+            saved.exists(),
+            "{name} must arrive in the receiver's download dir {} (found: {:?})",
+            saved.display(),
+            dir_names(dir_b.path())
+        );
+        assert_eq!(
+            std::fs::read(&saved).unwrap(),
+            bytes,
+            "{name} content must match byte for byte"
+        );
+    }
+
+    // The receiver really did handle three separate transfers.
+    let metrics = state_b.transfers.metrics.snapshot();
+    assert_eq!(metrics["transfers_started"], 3);
+    assert_eq!(metrics["transfers_finished"], 3);
+    assert_eq!(metrics["transfers_failed"], 0);
+}
+
+#[tokio::test]
 async fn metrics_endpoint_reports_counters() {
     let dir = tempfile::tempdir().unwrap();
     let (_, port, _) = instance("dave", dir.path().join("dl")).await;

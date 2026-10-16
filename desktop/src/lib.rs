@@ -499,6 +499,10 @@ pub fn run() {
                 .title("LanDrop");
             #[cfg(desktop)]
             let builder = builder
+                // Let the webview handle HTML5 drops itself: Tauri's own drag &
+                // drop interception would swallow them, so dragging files onto
+                // the window would do nothing.
+                .disable_drag_drop_handler()
                 // Embedded 64x64 RGBA from `assets/icon-64.rgba` (regenerate with
                 // `make icons`): a fixed asset, so failing here means the platform
                 // rejected it and a clear panic beats a window without a mark.

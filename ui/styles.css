@@ -1157,3 +1157,9 @@ input[type="checkbox"]:checked::before {
   color: var(--err);
   cursor: help;
 }
+
+/* "Accept all N files" for a multi-file batch (sits above the incoming list). */
+.accept-all {
+  width: 100%;
+  margin-bottom: 10px;
+}
