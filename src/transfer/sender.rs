@@ -53,6 +53,20 @@ pub async fn spawn_send(
     sha: Option<String>,
     local_path: PathBuf,
 ) -> Result<String> {
+    spawn_send_in(None, mgr, peer, filename, size, sha, local_path).await
+}
+
+/// Like [`spawn_send`], but the offer carries the sender's relative path so the
+/// receiver recreates the folder tree under its download directory.
+pub async fn spawn_send_in(
+    rel_path: Option<String>,
+    mgr: &TransferManager,
+    peer: Peer,
+    filename: String,
+    size: u64,
+    sha: Option<String>,
+    local_path: PathBuf,
+) -> Result<String> {
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let (my_id, my_name, _) = mgr.identity().await;
 
@@ -63,6 +77,7 @@ pub async fn spawn_send(
         size,
         sha256: sha,
         note: String::new(),
+        rel_path,
     };
 
     let id = {

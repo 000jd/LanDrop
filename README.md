@@ -132,6 +132,14 @@ no install at all.
   and time remaining. On the receiving side a batch shows one **Accept all N
   files** button (that path uses the configured download folder, so the per-file
   "ask where to save" prompt is skipped).
+- **Folders**: dropping a folder queues every file inside it and sends the
+  relative path with each one, so the receiver recreates the tree under its
+  download folder. Path segments are sanitized on arrival — `..`, absolute paths
+  and drive letters are refused, so a sender cannot write outside that folder.
+- **Several devices at once**: click devices to add them to the selection (the
+  header shows "2 devices") and every queued file goes to each of them — one
+  device works exactly as before, and a partial failure names the device it
+  failed for.
 - Any file type; streaming transfer (no full-file buffering)
 - SHA-256 integrity check; the declared size is enforced while streaming;
   collision-safe filenames (`file.txt`, `file-1.txt`, …)
@@ -554,8 +562,11 @@ never persisted.
   machine-local; accepts from other devices use the configured folder.
 - mDNS on some networks (client isolation, VPNs) is unreliable — manual peers
   cover this.
-- One transfer per file: selecting 32 files queues 32 transfers (the per-batch
-  cap), and the receiver sees one offer per file unless they use **Accept all**.
+- One transfer per file per device: 32 files × 2 devices is 64 transfers (the
+  per-batch cap is 32 files), and the receiver sees one offer per file unless they
+  use **Accept all**.
+- Folder sends recreate directories but not empty ones, and symlinks inside a
+  dropped folder are skipped.
 - The Tauri wrapper is Linux-first (works on Windows/macOS with the standard
   Tauri deps, but is only tested on Linux).
 
@@ -563,8 +574,7 @@ never persisted.
 
 - QR code of `http://<ip>:<port>` for phone onboarding
 - Transfer history persisted to disk (JSON/SQLite)
-- Folder drag & drop (files work, folders are skipped) and true resumable
-  transfers
+- True resumable transfers (an interrupted send starts over today)
 - Android foreground service, so receiving survives backgrounding
 - systemd user unit
 

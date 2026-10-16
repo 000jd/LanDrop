@@ -127,6 +127,9 @@ pub struct Transfer {
     pub updated_at: i64,
     /// SHA-256 of the file, if the sender provided one.
     pub sha256: Option<String>,
+    /// Relative path the sender asked for (folder sends); sanitized on arrival,
+    /// applied when choosing the destination directory.
+    pub rel_path: Option<String>,
     /// Bytes streamed so far (for speed / ETA).
     pub bytes_done: u64,
     /// Unix seconds when streaming started.
@@ -159,6 +162,7 @@ impl Transfer {
             created_at: now,
             updated_at: now,
             sha256: offer.sha256.clone(),
+            rel_path: offer.rel_path.clone(),
             bytes_done: 0,
             started_at: None,
             save_dir: None,
@@ -185,6 +189,7 @@ impl Transfer {
             created_at: now,
             updated_at: now,
             sha256: None,
+            rel_path: None,
             bytes_done: 0,
             started_at: None,
             save_dir: None,
@@ -600,6 +605,7 @@ mod tests {
             size,
             sha256: None,
             note: String::new(),
+            rel_path: None,
         }
     }
 

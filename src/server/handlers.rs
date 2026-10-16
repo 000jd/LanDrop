@@ -24,7 +24,7 @@ use tokio::io::AsyncWriteExt;
 use crate::peers::{parse_peer_addr_with, Peer};
 use crate::protocol::{AcceptInfo, Offer, TOKEN_HEADER, UPLOAD_TOKEN_HEADER};
 use crate::server::AppState;
-use crate::transfer::sender::spawn_send;
+use crate::transfer::sender::spawn_send_in;
 
 /// Version reported by /api/info and the UI.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -258,6 +258,7 @@ pub async fn api_send(
     mut multipart: Multipart,
 ) -> Response {
     let mut target: Option<String> = None;
+    let mut rel_path: Option<String> = None;
     let mut file_meta: Option<(String, u64, PathBuf, Option<String>)> = None; // (name, size, staged, sha)
 
     loop {
@@ -282,6 +283,16 @@ pub async fn api_send(
                         StatusCode::BAD_REQUEST,
                         format!("invalid target field: {e}"),
                     );
+                }
+            }
+            continue;
+        }
+        if name == "rel_path" {
+            // Folder sends: the receiver recreates the tree, sanitized on its side.
+            if let Ok(v) = field.text().await {
+                let v = v.trim();
+                if !v.is_empty() {
+                    rel_path = Some(crate::protocol::truncate_chars(v, 1024));
                 }
             }
             continue;
@@ -412,7 +423,17 @@ pub async fn api_send(
         }
     };
 
-    let id = match spawn_send(&state.transfers, peer, filename, size, sha, staged.clone()).await {
+    let id = match spawn_send_in(
+        rel_path,
+        &state.transfers,
+        peer,
+        filename,
+        size,
+        sha,
+        staged.clone(),
+    )
+    .await
+    {
         Ok(id) => id,
         Err(e) => {
             cleanup_file(&staged).await;

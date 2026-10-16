@@ -8,7 +8,9 @@ const state = {
   settings: null,
   peers: [],
   transfers: [],
-  selectedPeerId: null,
+  selectedPeerIds: [],
+  /// Relative path per queued file, for folder sends (empty = flat).
+  relPaths: new Map(),
   selectedFile: null,
   /// Files queued for the next send (one transfer each).
   selectedFiles: [],
@@ -242,9 +244,8 @@ function renderPeers() {
   const list = $("peerList");
   const peers = state.peers;
 
-  if (state.selectedPeerId && !peers.some((p) => p.id === state.selectedPeerId)) {
-    state.selectedPeerId = null;
-  }
+  // Forget devices that went away.
+  state.selectedPeerIds = state.selectedPeerIds.filter((id) => peers.some((p) => p.id === id));
 
   // Skip the DOM rebuild when nothing actually changed.
   const key = JSON.stringify(
@@ -259,7 +260,7 @@ function renderPeers() {
       $("peerEmpty").style.display = "none";
       for (const p of peers) {
         const el = document.createElement("div");
-        el.className = "peer" + (state.selectedPeerId === p.id ? " selected" : "");
+        el.className = "peer" + (state.selectedPeerIds.includes(p.id) ? " selected" : "");
         el.tabIndex = 0;
         el.setAttribute("role", "button");
         const initial = (p.name || "?").trim().charAt(0) || "?";
@@ -278,7 +279,7 @@ function renderPeers() {
           </div>
           ${blocked}
         `;
-        el.onclick = () => selectPeer(p);
+        el.onclick = () => togglePeer(p);
         el.onkeydown = (e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
@@ -292,18 +293,35 @@ function renderPeers() {
   updateSendTargetLabel();
 }
 
-function selectPeer(p) {
-  state.selectedPeerId = p.id;
+/// Clicking a device toggles it, so a batch can go to several devices at once.
+function togglePeer(p) {
+  const index = state.selectedPeerIds.indexOf(p.id);
+  if (index >= 0) {
+    state.selectedPeerIds.splice(index, 1);
+  } else {
+    state.selectedPeerIds.push(p.id);
+  }
   lastPeersKey = ""; // force a rebuild so the highlight updates
   renderPeers();
+  updateSendTargetLabel();
 }
 
 function updateSendTargetLabel() {
-  const p = state.peers.find((x) => x.id === state.selectedPeerId);
+  const peers = state.peers.filter((x) => state.selectedPeerIds.includes(x.id));
   const manual = $("manualAddr").value.trim();
-  const label = p ? `${p.name} (${p.addr}:${p.port})` : manual;
+  let label = manual;
+  if (peers.length === 1) label = `${peers[0].name} (${peers[0].addr}:${peers[0].port})`;
+  else if (peers.length > 1) label = `${peers.length} devices`;
   $("sendTargetLabel").textContent = label ? "→ " + label : "No device selected";
-  $("sendBtn").disabled = !(state.selectedFile && (p || manual));
+  $("sendBtn").disabled = !(state.selectedFiles.length > 0 && (peers.length > 0 || manual));
+}
+
+/// Every selected device (address form), or the manual address as a fallback.
+function sendTargets() {
+  const peers = state.peers.filter((x) => state.selectedPeerIds.includes(x.id));
+  if (peers.length > 0) return peers.map((p) => ({ label: p.name, address: `${p.addr}:${p.port}` }));
+  const manual = $("manualAddr").value.trim();
+  return manual ? [{ label: manual, address: manual }] : [];
 }
 
 let lastWaitingIds = new Set();
@@ -481,43 +499,54 @@ function updateBadge() {
 async function sendFiles() {
   const files = state.selectedFiles.slice();
   if (files.length === 0) return;
-  const manual = $("manualAddr").value.trim();
-  const p = state.peers.find((x) => x.id === state.selectedPeerId);
-  // Prefer the selected device. The manual box is only a fallback (and for Add).
-  let target = (p ? `${p.addr}:${p.port}` : "") || manual;
-  if (!target) { toast("Choose a device first", "warn"); return; }
+  const targets = sendTargets();
+  if (targets.length === 0) { toast("Choose a device first", "warn"); return; }
 
   const btn = $("sendBtn");
   btn.disabled = true;
-  const failed = [];
+  const failures = [];              // human-readable, for the summary toast
+  const failedPerFile = new Map();  // file -> how many targets refused it
+  const total = files.length * targets.length;
+  let done = 0;
   try {
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      btn.textContent = files.length > 1 ? `Uploading ${i + 1}/${files.length}…` : "Uploading…";
-      const fd = new FormData();
-      fd.append("target", target);
-      fd.append("file", file, file.name);
-      try {
-        await api("/api/send", { method: "POST", body: fd });
-        // Drop the file from the picker as soon as it is queued, so a retry
-        // after a failure does not resend what already went through.
-        state.selectedFiles = state.selectedFiles.filter((f) => f !== file);
-      } catch (e) {
-        failed.push(`${file.name}: ${e.message}`);
+    for (const target of targets) {
+      for (const file of files) {
+        done++;
+        btn.textContent =
+          total > 1 ? `Uploading ${done}/${total} → ${target.label}…` : "Uploading…";
+        const fd = new FormData();
+        fd.append("target", target.address);
+        fd.append("file", file, file.name);
+        // Folder sends: the receiver rebuilds the tree from this path.
+        const rel = state.relPaths.get(file);
+        if (rel) fd.append("rel_path", rel);
+        try {
+          await api("/api/send", { method: "POST", body: fd });
+        } catch (e) {
+          failedPerFile.set(file, (failedPerFile.get(file) || 0) + 1);
+          failures.push(`${file.name} → ${target.label}: ${e.message}`);
+        }
       }
     }
+
+    // Keep only files no target accepted, so a retry does not resend accepted
+    // copies; everything else leaves the picker.
+    const keep = files.filter((f) => failedPerFile.get(f) === targets.length);
+    state.selectedFiles = keep;
+    for (const f of files) if (!keep.includes(f)) state.relPaths.delete(f);
+    state.selectedFile = keep[0] || null;
     $("fileInput").value = "";
-    state.selectedFile = state.selectedFiles[0] || null;
     renderFileChosen();
     await loadTransfers();
 
-    const sent = files.length - failed.length;
-    if (failed.length === 0) {
-      toast(sent === 1 ? "Transfer started" : `${sent} transfers started`, "success");
+    const sent = total - failures.length;
+    const howMany = targets.length > 1 ? `${targets.length} devices` : targets[0].label;
+    if (failures.length === 0) {
+      toast(total === 1 ? "Transfer started" : `${sent} transfers started (${howMany})`, "success");
     } else if (sent === 0) {
-      toast(`Send failed: ${failed[0]}`, "error");
+      toast(`Send failed: ${failures[0]}`, "error");
     } else {
-      toast(`${sent} sent, ${failed.length} failed — ${failed[0]}`, "warn", 8000);
+      toast(`${sent} sent, ${failures.length} failed — ${failures[0]}`, "warn", 9000);
     }
   } finally {
     btn.disabled = false;
@@ -665,10 +694,11 @@ async function copyLanUrl() {
 // File selection / drag & drop
 // ---------------------------------------------------------------------------
 
-function pickFiles(fileList) {
+function pickFiles(entries) {
   // One transfer per file: the same path a single file has always taken, so any
   // mix of types and sizes works and every file gets its own progress row.
-  const incoming = Array.from(fileList || []).filter((f) => f && f.size >= 0 && !isDirectory(f));
+  // Folder drops arrive as {file, relPath} so the receiver can rebuild the tree.
+  const incoming = Array.from(entries || []).filter((e) => e && e.file && e.file.size >= 0);
   if (incoming.length === 0) return;
   const room = MAX_BATCH_FILES - state.selectedFiles.length;
   if (room <= 0) {
@@ -678,16 +708,57 @@ function pickFiles(fileList) {
   if (incoming.length > room) {
     toast(`Added the first ${room} — up to ${MAX_BATCH_FILES} files per batch`, "warn");
   }
-  state.selectedFiles = state.selectedFiles.concat(incoming.slice(0, room));
+  for (const entry of incoming.slice(0, room)) {
+    state.selectedFiles.push(entry.file);
+    if (entry.relPath) state.relPaths.set(entry.file, entry.relPath);
+  }
   state.selectedFile = state.selectedFiles[0] || null;
   renderFileChosen();
   updateSendTargetLabel();
 }
 
-/// Dropped folders arrive as zero-byte files with a directory entry behind them.
-function isDirectory(file) {
-  const entry = file._entry || null;
-  return Boolean(entry && entry.isDirectory);
+/// Files picked with the file dialog (no folders, no relative paths).
+function pickedFiles(list) {
+  return Array.from(list || []).map((file) => ({ file, relPath: "" }));
+}
+
+/// Walk dropped entries, keeping each file's path inside the dragged folder.
+async function droppedFiles(dataTransfer) {
+  const out = [];
+  const readEntries = (reader) =>
+    new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+  const walk = async (entry, prefix) => {
+    if (out.length >= MAX_BATCH_FILES) return;
+    if (entry.isFile) {
+      const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+      out.push({ file, relPath: prefix });
+      return;
+    }
+    if (!entry.isDirectory) return;
+    const reader = entry.createReader();
+    const nextPrefix = prefix ? `${prefix}/${entry.name}` : entry.name;
+    for (;;) {
+      const batch = await readEntries(reader);
+      if (!batch.length) break;
+      for (const child of batch) await walk(child, nextPrefix);
+    }
+  };
+
+  const items = dataTransfer.items;
+  if (items && items.length && items[0].webkitGetAsEntry) {
+    for (const item of items) {
+      const entry = item.webkitGetAsEntry();
+      if (!entry) continue;
+      if (entry.isFile) {
+        const file = item.getAsFile();
+        if (file) out.push({ file, relPath: "" });
+      } else {
+        await walk(entry, "");
+      }
+    }
+    return out;
+  }
+  return Array.from(dataTransfer.files || []).map((file) => ({ file, relPath: "" }));
 }
 
 function renderFileChosen() {
@@ -715,7 +786,7 @@ function setupDropzone() {
   };
   input.multiple = true;
   input.onchange = () => {
-    pickFiles(input.files);
+    pickFiles(pickedFiles(input.files));
     // Reset so picking the same file again still fires `change`.
     input.value = "";
   };
@@ -724,20 +795,18 @@ function setupDropzone() {
   dz.ondrop = (e) => {
     e.preventDefault();
     dz.classList.remove("dragover");
-    const files = Array.from(e.dataTransfer.files);
-    // Keep the directory entries around so folders are skipped rather than sent
-    // as empty files.
-    const items = e.dataTransfer.items;
-    if (items && items.length) {
-      for (let i = 0; i < items.length && i < files.length; i++) {
-        const entry = items[i].webkitGetAsEntry && items[i].webkitGetAsEntry();
-        if (entry) files[i]._entry = entry;
+    // Folders are walked here, so dragging a directory sends everything inside
+    // it with the tree preserved.
+    droppedFiles(e.dataTransfer).then((entries) => {
+      if (entries.length === 0) {
+        toast("Nothing to send in that drop", "warn");
       }
-    }
-    pickFiles(files);
+      pickFiles(entries);
+    });
   };
   $("clearFile").onclick = () => {
     state.selectedFiles = [];
+    state.relPaths.clear();
     state.selectedFile = null;
     // Reset the input so picking the same file again still fires `change`.
     $("fileInput").value = "";

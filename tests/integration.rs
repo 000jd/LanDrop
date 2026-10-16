@@ -84,6 +84,7 @@ async fn offer_accepted(
             size,
             sha256,
             note: String::new(),
+            rel_path: None,
         })
         .send()
         .await
@@ -283,6 +284,67 @@ async fn multi_file_batch_sends_different_types_and_sizes() {
 }
 
 #[tokio::test]
+async fn folder_sends_recreate_the_tree_and_refuse_escapes() {
+    // Folder sends carry a relative path in the offer; the receiver recreates the
+    // directories underneath its download dir and refuses anything that tries to
+    // climb out.
+    let dir = tempfile::tempdir().unwrap();
+    let (state, port, _) = instance("bob", dir.path().join("dl")).await;
+    let base = format!("http://127.0.0.1:{port}");
+    let payload = b"nested folder payload".to_vec();
+
+    for (rel, expect) in [
+        ("photos/2024", dir.path().join("dl/photos/2024/holiday.jpg")),
+        ("../../escape", dir.path().join("dl/holiday.jpg")),
+    ] {
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("{base}/api/v1/offer"))
+            .json(&serde_json::json!({
+                "sender_id": "tester",
+                "sender_name": "tester",
+                "filename": "holiday.jpg",
+                "size": payload.len() as u64,
+                "sha256": null,
+                "note": "",
+                "rel_path": rel,
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success(), "offer rejected: {resp:?}");
+        let tid = resp.json::<serde_json::Value>().await.unwrap()["transfer_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        state.transfers.accept(&tid, None).await.unwrap();
+
+        let token = upload_token(&state, &tid).await;
+        let resp = reqwest::Client::new()
+            .post(format!("{base}/api/v1/upload/{tid}"))
+            .header(landrop::protocol::UPLOAD_TOKEN_HEADER, token)
+            .body(payload.clone())
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success(), "upload rejected: {resp:?}");
+        wait_for_status(&state, &tid, "completed").await;
+
+        assert!(
+            expect.exists(),
+            "rel_path {rel:?} should land at {}",
+            expect.display()
+        );
+        assert_eq!(std::fs::read(&expect).unwrap(), payload);
+        // A traversal attempt must never create directories outside the download
+        // dir, and the escape sequence must not survive as a name either.
+        for path in expect.ancestors().take(3) {
+            assert!(!path.to_string_lossy().contains(".."));
+        }
+    }
+}
+
+#[tokio::test]
 async fn metrics_endpoint_reports_counters() {
     let dir = tempfile::tempdir().unwrap();
     let (_, port, _) = instance("dave", dir.path().join("dl")).await;
@@ -365,6 +427,7 @@ async fn upload_without_accept_is_rejected_by_receiver() {
             size: 5,
             sha256: None,
             note: String::new(),
+            rel_path: None,
         })
         .send()
         .await
@@ -806,6 +869,7 @@ async fn offer_with_bad_sha256_is_rejected() {
             size: 1,
             sha256: Some("not-a-hash".into()),
             note: String::new(),
+            rel_path: None,
         })
         .send()
         .await
@@ -873,6 +937,7 @@ async fn offer_pending(base: &str, filename: &str, size: u64) -> String {
             size,
             sha256: None,
             note: String::new(),
+            rel_path: None,
         })
         .send()
         .await

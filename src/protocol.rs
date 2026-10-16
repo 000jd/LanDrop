@@ -30,6 +30,53 @@ pub struct Offer {
     pub sha256: Option<String>,
     #[serde(default)]
     pub note: String,
+    /// Relative path inside the sender's selection, for folder sends
+    /// (`photos/2024/img.jpg`). Optional and ignored by older peers, so a mixed
+    /// pair simply saves the file flat.
+    #[serde(default)]
+    pub rel_path: Option<String>,
+}
+
+/// How deep a sender-provided relative path may go.
+const MAX_REL_DEPTH: usize = 16;
+
+/// Split a sender-provided relative path into safe directory names.
+///
+/// Refuses anything that could climb out of the download folder (`..`, absolute
+/// paths, drive letters), drops empty/`.` segments, sanitizes each name with the
+/// same rules as filenames, and caps the depth. `None` means "save flat".
+pub fn sanitize_rel_dirs(rel: &str) -> Option<Vec<String>> {
+    let rel = rel.trim();
+    // Absolute paths and UNC/drive forms are not "inside" anything: refuse them
+    // rather than quietly reinterpreting them.
+    if rel.starts_with('/') || rel.starts_with('\\') {
+        return None;
+    }
+    let mut dirs = Vec::new();
+    for raw in rel.replace('\\', "/").split('/') {
+        let part = raw.trim();
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        // A segment that tries to walk up, or carries a drive/UNC prefix, means
+        // the path is not trustworthy at all.
+        if part == ".." || part.contains(':') {
+            return None;
+        }
+        let clean = sanitize_filename(part);
+        if clean.is_empty() || clean.starts_with('.') {
+            continue;
+        }
+        dirs.push(clean);
+        if dirs.len() >= MAX_REL_DEPTH {
+            break;
+        }
+    }
+    if dirs.is_empty() {
+        None
+    } else {
+        Some(dirs)
+    }
 }
 
 /// Response to an accepted offer: where to upload and with which token.
@@ -206,6 +253,28 @@ mod tests {
         assert_eq!(sanitize_filename("."), "unnamed-file");
         assert_eq!(sanitize_filename(""), "unnamed-file");
         assert_eq!(sanitize_filename("   "), "unnamed-file");
+    }
+
+    #[test]
+    fn rel_dirs_are_sanitized_against_escape() {
+        assert_eq!(
+            sanitize_rel_dirs("photos/2024/vacation"),
+            Some(vec!["photos".into(), "2024".into(), "vacation".into()])
+        );
+        assert_eq!(
+            sanitize_rel_dirs("Ünïcode/ok"),
+            Some(vec!["Ünïcode".into(), "ok".into()])
+        );
+        // Traversal, absolute paths and drive letters are refused outright.
+        assert_eq!(sanitize_rel_dirs("../../etc"), None);
+        assert_eq!(sanitize_rel_dirs("/etc/passwd"), None);
+        assert_eq!(sanitize_rel_dirs("C:/Windows"), None);
+        // Nothing usable left.
+        assert_eq!(sanitize_rel_dirs(""), None);
+        assert_eq!(sanitize_rel_dirs("././."), None);
+        // Hidden segments are dropped, depth is capped.
+        assert_eq!(sanitize_rel_dirs(".hidden/keep"), Some(vec!["keep".into()]));
+        assert!(sanitize_rel_dirs(&"a/".repeat(40)).unwrap().len() <= 16);
     }
 
     #[test]

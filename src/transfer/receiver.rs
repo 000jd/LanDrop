@@ -43,7 +43,7 @@ where
 {
     // Snapshot expectations up front (lock order: download_dir, then transfers).
     let default_dir = mgr.download_dir.read().await.clone();
-    let (filename, expected_size, expected_sha, save_dir) = {
+    let (filename, expected_size, expected_sha, save_dir, rel_dirs) = {
         let map = mgr.transfers.read().await;
         let t = map
             .get(id)
@@ -62,10 +62,19 @@ where
             t.size,
             t.sha256.clone(),
             t.save_dir.clone(),
+            t.rel_path
+                .as_deref()
+                .and_then(crate::protocol::sanitize_rel_dirs),
         )
     };
     // A per-transfer folder chosen by the user wins over the default.
     let dest_dir = save_dir.unwrap_or(default_dir);
+    // Folder sends keep their shape: the sanitized segments were stripped of
+    // anything that could leave the download directory.
+    let dest_dir = match rel_dirs {
+        Some(dirs) => dirs.iter().fold(dest_dir, |dir, part| dir.join(part)),
+        None => dest_dir,
+    };
 
     // Refuse the upload up front when it clearly cannot fit on disk.
     if expected_size > 0 {

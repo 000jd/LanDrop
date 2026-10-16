@@ -334,7 +334,50 @@ against the code before acting; three claims did not survive that check.
   one JSON field — the 15 lines stay, now with a bounded read and shared by the
   quit/focus helpers.
 
-## Round 8: quality-of-life list — verified, partly implemented
+## Round 9: folders, multi-device, desktop drops
+
+Requested: (a) folder drag & drop, (b) pick **several** devices and send to all of
+them (or one), (c) the desktop app must behave like the phone for multi-select and
+drops.
+
+### Diagnosis first
+
+- Multi-file *does* work in the desktop webview — the UI is embedded in the
+  binary, so a desktop copy built before this round shows the old single-file
+  picker. Fix: run the new build (install the fresh `.deb`, or use the build the
+  release script produces). Same for drag & drop: the new build disables Tauri's
+  drop interception, so HTML5 drops reach the UI; older builds swallowed them.
+- Folders were deliberately skipped before. Now they are walked in the webview
+  (`webkitGetAsEntry`, WebKit/Chromium both support it) and each file inside is
+  queued with its relative path.
+
+### Wire change (backwards compatible)
+
+`Offer` gains an optional `rel_path` (`#[serde(default)]`), so an older peer simply
+saves the file flat. The receiver sanitizes every path segment
+(`sanitize_rel_dirs`): `..`, absolute paths and drive letters are refused, depth is
+capped at 16, and the existing collision-safe naming still applies inside the
+target directory. A sender cannot escape the download folder.
+
+### Work
+
+1. `protocol::sanitize_rel_dirs` + tests (traversal, absolute, depth, unicode).
+2. Receiver: create the sanitized subdirectories under the download dir (or the
+   per-transfer folder) and save inside them.
+3. Sender: `spawn_send_in(rel_path, …)` (the old `spawn_send` delegates with
+   `None`), fed by an optional `rel_path` multipart field on `/api/send`.
+4. UI: multi-device selection (click toggles, header shows the count), send loop
+   over files × devices with per-target failure reporting, folder walking on drop
+   with relative paths, and the picker summary counting folder contents.
+5. Tests: nested directory save, traversal refusal, plus a live two-receiver run
+   through the real UI.
+
+### Deliberately not now
+
+Native OS-level drops (`DragDropEvent`) would need a Tauri IPC bridge into a remote
+webview page plus a path-based send endpoint; the webview's own drop handling
+covers browser, desktop and Android with one code path. Revisit only if a platform
+turns out not to deliver directory entries.
 
 A second list (15 "nice to have" items) came in; each was checked against the
 code first. Several were already done, two are deliberately declined.
