@@ -286,7 +286,7 @@ against the code before acting; three claims did not survive that check.
 
 | # | Finding | Verdict | Action |
 |---|---|---|---|
-| 1 | MSRV: `Ipv4Addr::is_broadcast` needs Rust 1.79 | **wrong claim, right conclusion** — the local `rust-src` shows `#[stable(since = "1.7.0", feature = "ip_17")]`, so nothing in our code needs 1.79. But the declared MSRV was wrong anyway: a locked dependency (`idna_adapter`, via `url`) uses **edition 2024**, which needs **1.85+**, and the committed `Cargo.lock` was version 4 (older cargo cannot even read it) | declare and verify 1.85: `rust-version` in both manifests, README, and a CI job pinned to it |
+| 1 | MSRV: `Ipv4Addr::is_broadcast` needs Rust 1.79 | **wrong claim, right conclusion** — the local `rust-src` shows `#[stable(since = "1.7.0", feature = "ip_17")]`, so nothing in our code needs 1.79. The declared floor was still wrong: locked dependencies (`icu_*`, `idna_adapter` via `url`) need **1.86**, and the committed `Cargo.lock` is version 4, which older cargo cannot even read | measured the floor by bisecting toolchains (1.74 ✗, 1.85 ✗, **1.86 ✓**), set `rust-version = "1.86"` in both manifests, corrected the README, added the CI `msrv` job |
 | 2 | `parse_peer_addr` accepts loopback although the comment claims SSRF protection | valid | allow loopback **only for requests from this machine** (keeps the two-instance dev flow and tests working), reject it from the LAN; fix the comment; tests |
 | 3 | subnet-directed broadcast (`192.168.1.255`) accepted | valid | reject a `.255` last octet with a comment explaining the /24 heuristic |
 | 4 | `LANADROP_BUILD_ID` typo | valid | rename to `LANDROP_BUILD_ID` |
@@ -331,4 +331,26 @@ against the code before acting; three claims did not survive that check.
   known-bad inputs; a fuzzing target is worth adding when the protocol settles.
 - **Replacing the hand-rolled HTTP probe in `instance.rs` with reqwest**: reqwest
   would become a runtime dependency of the core binary (hyper + TLS) just to read
-  one JSON field — the 15 lines stay, now with a bounded read.
+  one JSON field — the 15 lines stay, now with a bounded read and shared by the
+  quit/focus helpers.
+
+### Follow-up after the review landed
+
+Two items came out of the review conversation itself:
+
+- **The hand-run smoke checks are now fixtures.** `docs/security-tests.md` keeps
+  the transcripts (address rules, save-folder rules, sanitiser, local-only
+  endpoints) and maps every row to the `#[test]` that guards it:
+  `integration::manual_peer_addresses_are_validated_over_http`,
+  `integration::accept_into_a_system_directory_is_rejected`,
+  `integration::focus_and_quit_endpoints_drive_the_window_and_the_node`, plus the
+  unit tests in `peers.rs`, `protocol.rs`, `autostart.rs` and `handlers.rs`.
+- **Single instance, for real.** The first cut of the build-aware logic opened a
+  second window (and a second node) when a different build was already running —
+  which is what the user saw. Now a second launch never opens a window: same build
+  → `POST /api/window/focus` raises the open window and exits; different build,
+  idle → `POST /api/quit` retires the older copy and the new build takes over the
+  port; different build, transferring → left alone with a notification. Both
+  endpoints are local-only (`403` otherwise). `NodeOptions::allow_second_instance`
+  remains for the case where a node must start next to a foreign one, but the
+  desktop path no longer uses it by default.

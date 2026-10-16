@@ -994,6 +994,56 @@ fn validate_dir(raw: &str) -> Result<PathBuf, String> {
     Ok(canon)
 }
 
+/// Quit this node (local requests only).
+///
+/// A freshly installed build calls this before taking over the port, so exactly
+/// one instance stays alive no matter how often the app is opened.
+pub async fn api_quit(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Response {
+    if !is_local_peer(&addr) {
+        return err(
+            StatusCode::FORBIDDEN,
+            "quitting is only available from this machine",
+        );
+    }
+    match state.shutdown.get() {
+        Some(tx) => {
+            let _ = tx.send(true);
+            Json(json!({ "ok": true })).into_response()
+        }
+        None => err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this node cannot quit itself",
+        ),
+    }
+}
+
+/// Raise the app window (local requests only).
+///
+/// A second launch of the same build calls this and then exits, so the user ends
+/// up with the window that is already open instead of a pile of copies.
+/// Browser and CLI mode have no window and answer 501.
+pub async fn api_focus(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Response {
+    if !is_local_peer(&addr) {
+        return err(
+            StatusCode::FORBIDDEN,
+            "raising the window is only available from this machine",
+        );
+    }
+    match &state.on_focus {
+        Some(hook) => {
+            (hook.0)();
+            Json(json!({ "ok": true })).into_response()
+        }
+        None => err(StatusCode::NOT_IMPLEMENTED, "no window in this mode"),
+    }
+}
+
 /// Persist the current config next to the node's config file (honours a
 /// custom `--config-dir`, falling back to the default location).
 ///

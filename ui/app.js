@@ -906,19 +906,6 @@ function init() {
   loadPeers();
   loadTransfers();
   connectEvents();
-
-  // The desktop app appends ?older_instance=<port> when another (older) LanDrop
-  // build is still running: that process keeps serving the old UI on its port,
-  // so say it out loud instead of letting it look like a failed update.
-  const older = new URLSearchParams(location.search).get("older_instance");
-  if (older) {
-    toast(
-      `An older LanDrop is still running on port ${older} — quit it from its tray menu to free that port`,
-      "warn",
-      15000,
-    );
-    history.replaceState(null, "", location.pathname);
-  }
 }
 
 document.addEventListener("DOMContentLoaded", init);

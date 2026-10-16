@@ -23,51 +23,62 @@ was removed in `84dde25` after reproducing it.
 
 ## What happens instead
 
-Every node writes `instance.json` (pid + port) into its config dir. On startup
-the app looks at that file, probes the port, and asks the node there for its
+Every node writes `instance.json` (pid + port) into its config dir and reports a
 **build marker** (`GET /api/info` → `"build": "<unix seconds>"`, compiled in by
-`build.rs`):
+`build.rs`).
+
+**One instance only.** A second launch never opens a second window:
 
 | Situation | Behaviour |
 |---|---|
-| No live instance | Start a node, open the window (this process owns the backend) |
-| Live instance, **same** build | Attach: the window loads the running node's UI; this process owns nothing and exits without stopping the backend |
-| Live instance, **different or missing** build marker | Do **not** attach and do **not** refuse to start: log a warning, start a second node on the next free port (`NodeOptions::allow_second_instance` skips the config-dir lock held by the old process), and show the new UI — with an in-app notice naming the port to free |
-| Startup race lost (lock taken between probe and start) | Re-probe once and attach if it is the same build |
+| No live instance | Start a node and open the window (this process owns the backend) |
+| Live instance, **same** build | `POST /api/window/focus` on the running node, then exit quietly — the window that is already open comes to the front |
+| Live instance, **different** build, idle | Ask it to quit through its local-only `POST /api/quit`, wait (bounded, ≤5 s) for the port to free up, then start this build and open the window — an installed update takes over cleanly |
+| Live instance, **different** build, transferring | Leave it alone (a transfer is never interrupted), show a notification — *"An older copy is transferring files on port 8420. Quit it from its tray menu, then open LanDrop again."* — and exit |
+| Live instance too old to understand `/api/quit` | Same as above: notification and exit. No second window, and no silently showing the older UI |
+| Startup race lost (lock taken between probe and start) | Re-probe once and hand over if it is the same build |
 
-Because discovery advertises the actual bound port, a node on 8421 is just as
-reachable as one on 8420 — nothing needs to be reconfigured. The only cost of
-running both is that the older process keeps serving its older UI on its own
-port until the user quits it (tray → **Quit**).
+The two local-only endpoints that make this work:
 
-## Why not "kill the old instance"?
+| Endpoint | Who calls it | Effect |
+|---|---|---|
+| `POST /api/quit` | a newer build replacing an older one | graceful shutdown of that node (not a kill: discovery stops, the server finishes, the lock is released) |
+| `POST /api/window/focus` | a second launch of the same build | un-minimize + raise + focus the existing window |
 
-The app has no channel to ask a foreign process to exit, and killing a process
-the user may be transferring files with is worse than showing a clear notice.
-The log line and the in-app notice name the port, and the tray menu has **Quit**.
+Both refuse anything that does not come from this machine (`403`) and are
+unreachable from a browser page thanks to the global cross-origin/`Host` guard.
+
+## Why not a plugin, and not "kill the old instance"?
+
+A plugin keyed on the app identity cannot see *which* build owns the window, which
+is the whole problem. A hard kill would work, but it can interrupt a transfer the
+user is watching and leaves no opportunity for the older process to release its
+instance lock — so the newer build asks politely, and only when the older node
+reports no transfer in flight (`GET /api/transfers`; unknown answers count as
+busy).
 
 ## Where the code lives
 
-- `src/instance.rs` — `instance.json` lock, `live_instance_in`, `remote_build`
-  (bounded 8 KiB read), `parse_build`.
-- `src/app.rs` — `NodeOptions::allow_second_instance`, the lock usage.
-- `desktop/src/lib.rs` — `existing_node` / `start_backend` (the table above),
-  and the `?older_instance=<port>` query parameter.
-- `ui/app.js` — the notice shown for `older_instance`.
+- `src/instance.rs` — `instance.json` lock, `live_instance_in`, `remote_build`,
+  `request_quit`, `request_focus`, `has_active_transfers` (bounded 8 KiB reads).
+- `src/app.rs` — `NodeOptions::{allow_second_instance, on_focus}`, the lock usage.
+- `src/server/handlers.rs` — `/api/quit` and `/api/window/focus` (both gated by
+  `is_local_peer`).
+- `desktop/src/lib.rs` — `existing_node` / `start_backend` (the table above), the
+  focus hook, and `wait_for_port_free`.
+- `ui/app.js` — nothing instance-specific any more; the UI is the same in both modes.
 
 ## Testing this
 
 ```bash
-# Build A: start a node with a temp config
+# Node A: start with a temp config
 ./bin/landrop --config-dir /tmp/landrop-a --downloads /tmp/landrop-a/dl
 
-# Build B: change anything in src/ or ui/ and rebuild, then start again with the
-# same config dir — it must log the older instance and serve the new UI on a
-# free port instead of attaching.
+# Node B: change anything in src/ or ui/ and rebuild, then start again with the
+# same config dir — it must retire the idle older node and take over the port.
 cargo build && ./target/release/landrop --config-dir /tmp/landrop-a
 ```
 
-`tests/integration.rs::start_node_binds_and_serves` and
-`settings_save_does_not_persist_run_only_overrides` cover the startup side of
-this; `src/instance.rs` unit tests cover build-marker parsing for current,
-older and unreachable nodes.
+Automated coverage: `tests/integration.rs::focus_and_quit_endpoints_drive_the_window_and_the_node`
+(the hook runs; `/api/quit` stops the node), plus the build-marker tests in
+`src/instance.rs`. `docs/security-tests.md` maps every rule to its test.

@@ -145,44 +145,106 @@ struct Backend {
     node: Option<RunningNode>,
     /// Whether this process started (and must stop) the node.
     owns: bool,
-    /// Port of an older LanDrop instance that is still running, if any.
-    older_instance: Option<u16>,
+    /// Another copy of the app is already on screen (or busy transferring):
+    /// raise it, tell the user if it is an older build, and exit without
+    /// opening a second window.
+    already_running: bool,
 }
 
-/// Start the backend in-process, or attach to a live one.
+/// Wait (bounded) until nothing answers on `port` any more.
+fn wait_for_port_free(port: u16, timeout: std::time::Duration) {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(200))
+            .is_err()
+        {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    warn!("port {port} is still busy after {timeout:?}");
+}
+
+/// Start the backend in-process, or hand over to the copy that is already open.
+///
+/// One instance only: a second launch never opens a second window. Same build →
+/// raise the running window and exit. Different build → retire the running copy
+/// through its local-only `/api/quit` (unless it is transferring something) and
+/// then take over; if that is not possible, tell the user and exit instead of
+/// piling up windows or showing the older UI.
 fn start_backend(app: &tauri::AppHandle) -> Result<Backend> {
     let mut options = node_options(app)?;
+    #[cfg(desktop)]
+    {
+        let handle = app.clone();
+        options.on_focus = Some(landrop::app::FocusHook(std::sync::Arc::new(move || {
+            show_main(&handle)
+        })));
+    }
     let config_dir: Option<PathBuf> = options.config_dir.clone().map(PathBuf::from);
     let dir_ref = config_dir.as_deref();
-    let mut older_instance = None;
 
     match existing_node(dir_ref) {
         Existing::SameBuild(url) => {
-            info!("attaching to existing LanDrop at {url}");
+            // The window is already open: raise it, then leave quietly.
+            let port = url
+                .rsplit(':')
+                .next()
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or_default();
+            if landrop::instance::request_focus(port) {
+                info!("LanDrop is already running at {url}; raised its window");
+            } else {
+                info!("LanDrop is already running at {url}");
+            }
             return Ok(Backend {
                 url,
                 node: None,
                 owns: false,
-                older_instance: None,
+                already_running: true,
             });
         }
         Existing::OtherBuild { port, build } => {
-            // This is the "installed the new version but still see the old UI"
-            // trap: an older process keeps serving its assets until it is
-            // quit. Do not attach to it (the window would show the old UI) and
-            // do not refuse to start (the lock is held by that process) —
-            // serve our own node on the next free port instead.
-            warn!(
-                "the LanDrop already running on port {port} is {}; starting this build ({}) on \
-                 another port — quit that instance to free port {port}",
-                match &build {
-                    Some(b) => format!("a different build ({b})"),
-                    None => "an older build (no build marker)".to_string(),
-                },
-                landrop::BUILD_ID
-            );
-            options.allow_second_instance = true;
-            older_instance = Some(port);
+            let which = match &build {
+                Some(b) => format!("a different build ({b})"),
+                None => "an older build (no build marker)".to_string(),
+            };
+            if landrop::instance::has_active_transfers(port) {
+                warn!("{which} is on port {port} with a transfer in progress; leaving it alone");
+                landrop::notify::notify(
+                    "LanDrop is already running",
+                    &format!(
+                        "An older copy is transferring files on port {port}. Quit it from its \
+                         tray menu, then open LanDrop again."
+                    ),
+                );
+                return Ok(Backend {
+                    url: String::new(),
+                    node: None,
+                    owns: false,
+                    already_running: true,
+                });
+            }
+            if !landrop::instance::request_quit(port) {
+                warn!("{which} is on port {port} and cannot be asked to quit; leaving it alone");
+                landrop::notify::notify(
+                    "LanDrop is already running",
+                    &format!(
+                        "An older copy is running on port {port}. Quit it from its tray menu, \
+                         then open LanDrop again."
+                    ),
+                );
+                return Ok(Backend {
+                    url: String::new(),
+                    node: None,
+                    owns: false,
+                    already_running: true,
+                });
+            }
+            // It accepted the quit request: wait for the port, then take over.
+            info!("retiring the older instance on port {port} ({which})");
+            wait_for_port_free(port, std::time::Duration::from_secs(5));
         }
         Existing::None => {}
     }
@@ -194,18 +256,18 @@ fn start_backend(app: &tauri::AppHandle) -> Result<Backend> {
                 url: node.local_url(),
                 node: Some(node),
                 owns: true,
-                older_instance,
+                already_running: false,
             })
         }
         Err(e) => {
-            // Lost the startup race against another launch: attach if it is
+            // Lost the startup race against another launch: hand over if it is
             // the same build after all.
             match existing_node(dir_ref) {
                 Existing::SameBuild(url) => Ok(Backend {
                     url,
                     node: None,
                     owns: false,
-                    older_instance,
+                    already_running: true,
                 }),
                 _ => Err(e),
             }
@@ -391,24 +453,37 @@ pub fn run() {
             let handle = app.handle().clone();
             let backend = start_backend(&handle)
                 .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
+            if backend.already_running {
+                // One instance only: the window (or the busy older copy) is
+                // already on screen, so this launch has nothing to show.
+                handle.exit(0);
+                return Ok(());
+            }
+            let node_watch = backend.node.clone();
             handle.manage(NodeState {
                 node: Arc::new(Mutex::new(backend.node)),
                 owns_backend: backend.owns,
             });
+
+            // If the node stops on its own — `POST /api/quit` from a newer build
+            // taking over — take the window down with it, so no empty shell (and
+            // no stale instance record) is left behind.
+            if let Some(node) = node_watch {
+                let handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    node.wait_for_shutdown().await;
+                    info!("backend stopped; exiting");
+                    handle.exit(0);
+                });
+            }
 
             #[cfg(desktop)]
             if let Err(e) = setup_tray(&handle) {
                 warn!("tray unavailable ({e}); running window-only");
             }
 
-            // Tell the UI when an older instance is still holding its port, so
-            // the user knows to quit it instead of wondering why an update
-            // "did not work".
-            let window_src = match backend.older_instance {
-                Some(port) => format!("{}/?older_instance={port}", backend.url),
-                None => backend.url,
-            };
-            let window_url: tauri::Url = window_src
+            let window_url: tauri::Url = backend
+                .url
                 .parse()
                 .map_err(|e| -> Box<dyn std::error::Error> { format!("{e}").into() })?;
             let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(window_url))

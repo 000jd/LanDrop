@@ -113,7 +113,7 @@ no install at all.
 | Android | [Android app](#android-app) · [Updating an installed copy](#updating-an-installed-copy) |
 | Sending & receiving | [Features](#features) · [Run on two real machines](#run-on-two-real-machines) |
 | Troubleshooting | [Firewall](#firewall) · [mDNS troubleshooting](#mdns-troubleshooting) · [Known limitations](#known-limitations) |
-| Security & privacy | [Security notes](#security-notes) · [Configuration](#configuration) |
+| Security & privacy | [Security notes](#security-notes) · [Configuration](#configuration) · [Security tests](docs/security-tests.md) |
 | Development | [Project layout](#project-layout) · [API](#api-local) · [Wire protocol](#wire-protocol-device--device) · [Instance model](docs/INSTANCE_MODEL.md) |
 
 ## Features
@@ -143,8 +143,9 @@ no install at all.
 - Persistent settings (name, port, download dir) in
   `~/.config/landrop/config.toml`; CLI flags apply to a single run only
 - Private, auto-cleaned staging for outgoing files (no leftover copies)
-- Tauri desktop wrapper with tray icon, **build-aware single instance** (a newer
-  build never attaches to an older running copy) and graceful shutdown
+- Tauri desktop wrapper with tray icon, **single instance** (a second launch
+  raises the window that is already open; a newer build retires an idle older
+  copy instead of piling up windows) and graceful shutdown
 - Every build reports its **build time** in `GET /api/info` and in
   **Settings → This device → Version**, so a stale install is obvious
 
@@ -268,10 +269,12 @@ process is gone. Two things make that visible instead of confusing:
   a fresh build while an older copy is still running used to be swallowed by
   Tauri's single-instance plugin (the new launch silently re-focused the old
   window — this is why a new `.deb` could look like it "did nothing"). There is
-  no such plugin now: the new build starts its own node on the next free port,
-  logs `the LanDrop already running on port 8420 is an older build (no build
-  marker)`, shows an in-app notice — *"An older LanDrop is still running on port
-  8420 — quit it from its tray menu to free that port"* — and serves the new UI.
+  no such plugin now, and **only one instance ever runs**: a second launch raises
+  the window that is already open, and a newer build *retires* an idle older copy
+  through its local-only `POST /api/quit` before taking over the port. If the
+  older copy is busy transferring something, it is left alone and you get a
+  notification asking you to quit it from its tray menu. See
+  [docs/INSTANCE_MODEL.md](docs/INSTANCE_MODEL.md).
 
 1. **Quit the running app** (tray → **Quit**, or `pkill -f landrop-desktop`; on
    Windows: Task Manager → end `landrop-desktop.exe`). Do this *before*
@@ -312,6 +315,11 @@ process is gone. Two things make that visible instead of confusing:
   cannot point the app at itself or at another local service.
 - Save folders may not be system directories (`/etc`, `/usr`, `/boot`, `/var`, …);
   home folders, removable media and temp folders stay allowed.
+- The desktop helpers `POST /api/quit` (retire an older copy) and
+  `POST /api/window/focus` (raise the running window) are **local-only** and
+  answer `403` to anything that does not come from this machine.
+- Every rule above has a test; [docs/security-tests.md](docs/security-tests.md)
+  maps them, including the transcripts they came from.
 - Outgoing files are staged in a private `outbox` directory under the config dir
   (mode 0700) and deleted once the transfer ends; uploads never buffer a whole
   file in memory.

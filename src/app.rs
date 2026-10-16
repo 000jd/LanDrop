@@ -21,6 +21,19 @@ use crate::peers::{Peer, PeerStore};
 use crate::server::{self, AppState};
 use crate::transfer::TransferManager;
 
+/// Callback a desktop wrapper registers so that a second launch can raise the
+/// window that is already open (the local-only `POST /api/window/focus`).
+///
+/// `None` in browser/CLI mode, where there is no window to raise.
+#[derive(Clone)]
+pub struct FocusHook(pub Arc<dyn Fn() + Send + Sync>);
+
+impl std::fmt::Debug for FocusHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FocusHook")
+    }
+}
+
 /// Options for starting a LanDrop node.
 #[derive(Debug, Clone)]
 pub struct NodeOptions {
@@ -46,6 +59,8 @@ pub struct NodeOptions {
     /// is a *different build*, so the new build still shows its own UI instead
     /// of silently attaching to the old one (or refusing to start).
     pub allow_second_instance: bool,
+    /// Desktop hook for `POST /api/window/focus` (see [`FocusHook`]).
+    pub on_focus: Option<FocusHook>,
 }
 
 impl Default for NodeOptions {
@@ -59,6 +74,7 @@ impl Default for NodeOptions {
             port_scan: true,
             port_scan_limit: 20,
             allow_second_instance: false,
+            on_focus: None,
         }
     }
 }
@@ -208,6 +224,12 @@ pub async fn start_node(options: NodeOptions) -> Result<RunningNode> {
 
     // Shutdown channel (broadcast to discovery, sweeps and server).
     let (shutdown_tx, shutdown_rx) = events::shutdown_channel();
+
+    // Local-only hooks: `/api/quit` lets a newer build retire this one, and
+    // `/api/window/focus` lets a second launch raise this window instead of
+    // opening another one.
+    let _ = state.shutdown.set(shutdown_tx.clone());
+    state.on_focus = options.on_focus.clone();
 
     // Discovery after bind, using the real listen port.
     if !options.no_mdns {

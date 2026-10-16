@@ -120,12 +120,13 @@ pub fn acquire(dir: Option<&Path>) -> Result<Option<InstanceLock>> {
     }
 }
 
-/// Read the build marker from a node's `/api/info` with a tiny raw HTTP GET
-/// (short timeouts, no extra dependency).
+/// Minimal HTTP/1.0 request to a LanDrop node on `port`; returns
+/// `(status, body)`.
 ///
-/// `None` means "could not identify it" — which is how older builds, that do
-/// not report a build marker at all, are detected.
-pub fn remote_build(port: u16) -> Option<String> {
+/// Deliberately tiny and bounded: this talks to a *local* LanDrop to identify it
+/// and to ask it to quit or raise its window — not a general HTTP client (that
+/// would drag hyper + TLS into the core binary for one JSON field).
+fn http_request(port: u16, method: &str, path: &str) -> Option<(u16, String)> {
     use std::io::{Read, Write};
     /// `/api/info` is a few hundred bytes; never buffer more than this, in case
     /// something other than LanDrop is listening on that port.
@@ -134,13 +135,68 @@ pub fn remote_build(port: u16) -> Option<String> {
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let mut stream =
         std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(400)).ok()?;
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(600)));
-    stream
-        .write_all(b"GET /api/info HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
-        .ok()?;
-    let mut body = String::new();
-    let _ = stream.take(MAX_BODY).read_to_string(&mut body);
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(800)));
+    let request = format!(
+        "{method} {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut raw = String::new();
+    let _ = stream.take(MAX_BODY).read_to_string(&mut raw);
+    let status = raw
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())?;
+    let body = raw
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b.to_string())
+        .unwrap_or_default();
+    Some((status, body))
+}
+
+/// Read the build marker from a node's `/api/info`.
+///
+/// `None` means "could not identify it" — which is how older builds, that do
+/// not report a build marker at all, are detected.
+pub fn remote_build(port: u16) -> Option<String> {
+    let (status, body) = http_request(port, "GET", "/api/info")?;
+    if status != 200 {
+        return None;
+    }
     parse_build(&body)
+}
+
+/// Ask a node on `port` to shut down (its own local-only endpoint).
+pub fn request_quit(port: u16) -> bool {
+    matches!(http_request(port, "POST", "/api/quit"), Some((200, _)))
+}
+
+/// Ask a node on `port` to raise the window it already has (local-only).
+pub fn request_focus(port: u16) -> bool {
+    matches!(
+        http_request(port, "POST", "/api/window/focus"),
+        Some((200, _))
+    )
+}
+
+/// True when a node reports a transfer that is still in flight.
+///
+/// Unknown answers count as "busy": better to leave an older instance alone than
+/// to interrupt a transfer the user is watching.
+pub fn has_active_transfers(port: u16) -> bool {
+    const ACTIVE_IS_UNKNOWN: bool = true;
+    let Some((200, body)) = http_request(port, "GET", "/api/transfers") else {
+        return ACTIVE_IS_UNKNOWN;
+    };
+    let Ok(list) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return ACTIVE_IS_UNKNOWN;
+    };
+    let Some(list) = list.as_array() else {
+        return ACTIVE_IS_UNKNOWN;
+    };
+    list.iter().any(|t| {
+        let status = t.get("status").and_then(|s| s.as_str()).unwrap_or("");
+        !matches!(status, "completed" | "failed" | "cancelled" | "rejected")
+    })
 }
 
 /// Pull `"build":"…"` out of a JSON body without a parser.

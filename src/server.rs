@@ -31,6 +31,12 @@ pub struct AppState {
     pub peers: Arc<PeerStore>,
     pub transfers: TransferManager,
     pub events: EventBus,
+    /// Requests a graceful shutdown of this node; the local-only
+    /// `POST /api/quit` uses it so a freshly installed build can retire an older
+    /// running copy. Set by `start_node`.
+    pub shutdown: Arc<std::sync::OnceLock<tokio::sync::watch::Sender<bool>>>,
+    /// Desktop hook raising the app window (`POST /api/window/focus`).
+    pub on_focus: Option<crate::app::FocusHook>,
     /// Explicit config dir when the node runs with a custom one (staging and
     /// instance bookkeeping live there).
     pub config_dir: Option<PathBuf>,
@@ -45,6 +51,8 @@ impl AppState {
             peers,
             transfers,
             events,
+            shutdown: Arc::new(std::sync::OnceLock::new()),
+            on_focus: None,
             config_dir: None,
         }
     }
@@ -79,6 +87,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/events", get(handlers::api_events_sse))
         .route("/api/settings", get(handlers::api_get_settings))
         .route("/api/settings", post(handlers::api_save_settings))
+        // Local-only helpers used by the desktop app: retire an older copy and
+        // raise the window this process already has.
+        .route("/api/quit", post(handlers::api_quit))
+        .route("/api/window/focus", post(handlers::api_focus))
         .route("/api/downloads/open", post(handlers::api_open_downloads))
         // Folder picker (machine-local): list subdirectories / create one.
         .route("/api/fs/list", get(handlers::api_list_dirs))

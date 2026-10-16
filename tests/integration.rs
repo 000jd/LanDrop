@@ -881,6 +881,97 @@ async fn accept_into_a_system_directory_is_rejected() {
 }
 
 #[tokio::test]
+async fn manual_peer_addresses_are_validated_over_http() {
+    // Regression fixture for the address rules (see docs/security-tests.md):
+    // the /24 broadcast form, the global broadcast, unspecified, link-local and
+    // multicast targets are refused; a real LAN address works, and loopback is
+    // allowed because this request comes from this machine.
+    let dir = tempfile::tempdir().unwrap();
+    let (_, port, _) = instance("carol", dir.path().join("dl")).await;
+    let base = format!("http://127.0.0.1:{port}");
+    let client = reqwest::Client::new();
+
+    for bad in [
+        "192.168.1.255:8420",
+        "255.255.255.255:8420",
+        "0.0.0.0:8420",
+        "169.254.169.254:80",
+        "224.0.0.1:8420",
+    ] {
+        let resp = client
+            .post(format!("{base}/api/peers/manual"))
+            .json(&serde_json::json!({ "address": bad }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            reqwest::StatusCode::BAD_REQUEST,
+            "{bad} must be refused"
+        );
+        let body: serde_json::Value = resp.json().await.unwrap();
+        let msg = body["error"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains("refusing"),
+            "{bad}: unexpected message {msg:?}"
+        );
+    }
+
+    for good in ["192.168.1.25:8420", "127.0.0.1:8420"] {
+        let resp = client
+            .post(format!("{base}/api/peers/manual"))
+            .json(&serde_json::json!({ "address": good }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            reqwest::StatusCode::OK,
+            "{good} must be accepted"
+        );
+    }
+}
+
+#[tokio::test]
+async fn focus_and_quit_endpoints_drive_the_window_and_the_node() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static FOCUSED: AtomicBool = AtomicBool::new(false);
+
+    let dir = tempfile::tempdir().unwrap();
+    let node = landrop::app::start_node(landrop::app::NodeOptions {
+        port: Some(0),
+        downloads: Some(dir.path().join("dl").to_string_lossy().into_owned()),
+        no_mdns: true,
+        port_scan: false,
+        config_dir: Some(dir.path().to_string_lossy().into_owned()),
+        on_focus: Some(landrop::app::FocusHook(std::sync::Arc::new(|| {
+            FOCUSED.store(true, Ordering::SeqCst)
+        }))),
+        ..landrop::app::NodeOptions::default()
+    })
+    .await
+    .unwrap();
+    let url = format!("http://127.0.0.1:{}", node.addr.port());
+    let client = reqwest::Client::new();
+
+    // A second launch raises the window it already has instead of opening one.
+    let resp = client
+        .post(format!("{url}/api/window/focus"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    assert!(FOCUSED.load(Ordering::SeqCst), "the focus hook must run");
+
+    // A newer build can retire this copy through the same local-only surface.
+    let resp = client.post(format!("{url}/api/quit")).send().await.unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    tokio::time::timeout(std::time::Duration::from_secs(5), node.wait_for_shutdown())
+        .await
+        .expect("POST /api/quit must stop the node");
+}
+
+#[tokio::test]
 async fn settings_save_does_not_persist_run_only_overrides() {
     // A settings save later in the run must not leak the CLI overrides
     // (`--port` / `--name`): they apply to that run only.

@@ -153,7 +153,17 @@ async fn main() -> Result<()> {
             let _ = shutdown_done_tx.send(());
         });
     }
-    let _ = shutdown_done_rx.await;
+    tokio::select! {
+        _ = shutdown_done_rx => {}
+        // The node can also be stopped from outside — `POST /api/quit`, which a
+        // newer build sends when it takes this one's place. Exit the process in
+        // that case too, otherwise an empty shell would linger and hold the
+        // config-dir lock.
+        _ = node.wait_for_shutdown() => {
+            info!("node stopped; exiting");
+            return Ok(());
+        }
+    }
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), node.wait_for_shutdown()).await;
 
     Ok(())
