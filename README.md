@@ -229,7 +229,7 @@ no install at all.
 
 | Platform | Support |
 |---|---|
-| Linux | Primary target: desktop app (`.deb` / `.rpm` / `.AppImage`) and browser mode |
+| Linux | Desktop app (`.deb` / `.rpm` / `.AppImage`) and browser mode |
 | Windows | Browser mode (`cargo build --release`) |
 | macOS | Browser mode |
 | Android | Signed APK with the same UI and features (aarch64), system share sheet, no runtime permissions |
