@@ -133,7 +133,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/offer/{id}", get(handlers::v1_offer_status))
         .route(
             "/api/v1/upload/{id}",
-            post(handlers::v1_upload).layer(DefaultBodyLimit::disable()),
+            get(handlers::v1_upload_head)
+                .post(handlers::v1_upload)
+                .layer(DefaultBodyLimit::disable()),
         )
         // Static UI
         .fallback(get(handlers::ui_static))

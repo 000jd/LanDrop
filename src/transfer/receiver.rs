@@ -1,4 +1,6 @@
-//! Incoming transfer handling: stream upload to temp file, verify, rename.
+//! Incoming transfer handling: stream upload to a deterministic partial file,
+//! verify, rename — and keep the partial file across a broken connection so the
+//! sender can resume from the byte offset reported by `HEAD /api/v1/upload/{id}`.
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -9,7 +11,9 @@ use tokio::io::AsyncWriteExt;
 use tracing::{info, warn};
 
 use crate::protocol::{canonical_hex, reserve_unique_path};
-use crate::transfer::{now_secs, Direction, Status, TransferManager};
+use crate::transfer::{
+    destination_dir, now_secs, part_path_for, Direction, Status, TransferManager,
+};
 
 /// How often (bytes) the receive loop re-checks status and reports progress.
 const PROGRESS_INTERVAL: u64 = 512 * 1024;
@@ -20,30 +24,58 @@ const EMIT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500)
 /// How often the system progress notification is refreshed.
 const NOTIFY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Size of the chunks used both for the upload stream and for re-feeding an
+/// existing partial file into the SHA-256 hasher.
+const CHUNK: usize = 64 * 1024;
+
 enum FailKind {
-    Cancelled,
-    AlreadyFailed,
+    /// The transfer already reached a terminal state (cancelled, rejected,
+    /// expired, completed) — leave that state untouched.
+    Terminal,
+    /// A new failure that this receive attempt must record.
     Failed,
 }
 
 /// Receive an upload body for an accepted transfer:
 ///
-/// - validates state,
-/// - streams the body to a temp file in the download dir (aborting early on
-///   oversize bodies, cancel or sweep),
+/// - validates state and claims the single upload slot,
+/// - streams the body to `.{filename}.part-{id}` in the destination directory
+///   (or resumes at `offset`, re-hashing the existing prefix first),
 /// - verifies expected size (and SHA-256 when provided),
 /// - atomically renames to a collision-safe final name,
 /// - updates the transfer record and emits events.
 ///
-/// On any failure the temp file is removed; a cancelled transfer stays
-/// cancelled.
-pub async fn receive_stream<B>(mgr: &TransferManager, id: &str, mut body: B) -> Result<PathBuf>
+/// A read error after some bytes arrived keeps the partial file on disk and
+/// leaves the transfer in `Transferring`, so a retry can resume. Protocol
+/// violations (overflow, checksum mismatch, clean EOF before the declared size)
+/// delete the partial file, burn the upload token and fail the transfer.
+pub async fn receive_stream<B>(
+    mgr: &TransferManager,
+    id: &str,
+    body: B,
+    offset: u64,
+) -> Result<PathBuf>
+where
+    B: tokio::io::AsyncRead + Unpin,
+{
+    let result = receive_stream_inner(mgr, id, body, offset).await;
+    // Always release the upload slot, whatever happened.
+    mgr.reset_uploading(id).await;
+    result
+}
+
+async fn receive_stream_inner<B>(
+    mgr: &TransferManager,
+    id: &str,
+    mut body: B,
+    offset: u64,
+) -> Result<PathBuf>
 where
     B: tokio::io::AsyncRead + Unpin,
 {
     // Snapshot expectations up front (lock order: download_dir, then transfers).
     let default_dir = mgr.download_dir.read().await.clone();
-    let (filename, expected_size, expected_sha, save_dir, rel_dirs) = {
+    let (filename, expected_size, expected_sha, dest_dir, part_path, previous_status) = {
         let map = mgr.transfers.read().await;
         let t = map
             .get(id)
@@ -51,49 +83,61 @@ where
         if t.direction != Direction::Incoming {
             bail!("transfer {id} is not incoming");
         }
-        if t.status != Status::Accepted {
+        if !matches!(t.status, Status::Accepted | Status::Transferring) {
             bail!(
                 "transfer {id} is not accepted (status={})",
                 t.status.as_str()
             );
         }
+        let dest_dir = destination_dir(&default_dir, t.save_dir.as_deref(), t.rel_path.as_deref());
+        let part_path = t.part_path.clone().unwrap_or_else(|| {
+            part_path_for(
+                &default_dir,
+                t.save_dir.as_deref(),
+                t.rel_path.as_deref(),
+                &t.filename,
+                id,
+            )
+        });
         (
             t.filename.clone(),
             t.size,
             t.sha256.clone(),
-            t.save_dir.clone(),
-            t.rel_path
-                .as_deref()
-                .and_then(crate::protocol::sanitize_rel_dirs),
+            dest_dir,
+            part_path,
+            t.status,
         )
-    };
-    // A per-transfer folder chosen by the user wins over the default.
-    let dest_dir = save_dir.unwrap_or(default_dir);
-    // Folder sends keep their shape: the sanitized segments were stripped of
-    // anything that could leave the download directory.
-    let dest_dir = match rel_dirs {
-        Some(dirs) => dirs.iter().fold(dest_dir, |dir, part| dir.join(part)),
-        None => dest_dir,
     };
 
     // Refuse the upload up front when it clearly cannot fit on disk.
-    if expected_size > 0 {
+    let remaining = expected_size.saturating_sub(offset);
+    if remaining > 0 {
         let free = crate::util::free_space(&dest_dir);
-        if free > 0 && expected_size > free {
-            bail!("not enough free disk space: need {expected_size} bytes");
+        if free > 0 && remaining > free {
+            bail!("not enough free disk space: need {remaining} bytes");
         }
     }
 
-    // Mark transferring.
+    // Mark transferring. Resuming keeps the same status but starts a fresh
+    // speed window at the offset already on disk.
+    let first_attempt = previous_status == Status::Accepted;
     mgr.with_transfer(id, |t| {
         t.status = Status::Transferring;
-        t.progress = 0.0;
-        t.bytes_done = 0;
+        t.progress = if expected_size > 0 {
+            offset as f64 / expected_size as f64
+        } else {
+            0.0
+        };
+        t.bytes_done = offset;
         t.started_at = Some(std::time::Instant::now());
         t.updated_at = now_secs();
+        t.part_path = Some(part_path.clone());
     })
     .await;
     mgr.emit_update(id, "transfer_updated").await;
+    if first_attempt {
+        mgr.metrics.transfer_started();
+    }
 
     // Progress notifications (desktop / background mode only).
     let notify_on = mgr
@@ -110,29 +154,90 @@ where
         );
     }
 
-    // Temp file inside the download dir (same filesystem -> atomic rename).
     tokio::fs::create_dir_all(&dest_dir)
         .await
         .with_context(|| format!("create download dir {}", dest_dir.display()))?;
-    let tmp = dest_dir.join(format!(".{filename}.part-{}", uuid::Uuid::new_v4()));
-    mgr.metrics.transfer_started();
+
+    // Set when the body could not be read any further, as opposed to a
+    // protocol violation or a cancel. Those are the only cases that keep the
+    // partial file around for a resume.
+    let mut interrupted = false;
+    // Set when the transfer stopped being ours while streaming (cancelled,
+    // rejected, expired or completed elsewhere).
+    let mut terminal = false;
 
     let result = async {
-        let mut file = tokio::fs::File::create(&tmp)
-            .await
-            .with_context(|| format!("create temp file {}", tmp.display()))?;
+        // Open the partial file at the requested position. For a resume, the
+        // existing prefix is fed back into the hasher before appending.
+        let (mut file, mut hasher, mut done) = if offset == 0 {
+            let mut opts = tokio::fs::OpenOptions::new();
+            opts.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            opts.mode(0o600);
+            let file = opts
+                .open(&part_path)
+                .await
+                .with_context(|| format!("create partial file {}", part_path.display()))?;
+            (file, Sha256::new(), 0u64)
+        } else {
+            let on_disk = tokio::fs::metadata(&part_path)
+                .await
+                .with_context(|| format!("stat partial file {}", part_path.display()))?
+                .len();
+            if on_disk != offset {
+                bail!(
+                    "resume offset mismatch: partial file has {on_disk} bytes, request wants {offset}"
+                );
+            }
+            let mut existing = tokio::fs::File::open(&part_path)
+                .await
+                .with_context(|| format!("open partial file {}", part_path.display()))?;
+            let mut hasher = Sha256::new();
+            let mut fed: u64 = 0;
+            let mut buf = vec![0u8; CHUNK];
+            while fed < offset {
+                let want = ((offset - fed) as usize).min(CHUNK);
+                let n = tokio::io::AsyncReadExt::read(&mut existing, &mut buf[..want])
+                    .await
+                    .context("read partial file")?;
+                if n == 0 {
+                    bail!(
+                        "resume offset mismatch: partial file ended at {fed} bytes, wanted {offset}"
+                    );
+                }
+                hasher.update(&buf[..n]);
+                fed += n as u64;
+            }
+            drop(existing);
+            let file = tokio::fs::OpenOptions::new()
+                .append(true)
+                .open(&part_path)
+                .await
+                .with_context(|| format!("append to partial file {}", part_path.display()))?;
+            (file, hasher, offset)
+        };
 
         // Stream with size + sha256 computed on the fly.
-        let mut hasher = Sha256::new();
-        let mut done: u64 = 0;
-        let mut next_update: u64 = 0;
+        let mut next_update: u64 = done + PROGRESS_INTERVAL;
         let mut last_emit = Instant::now();
         let mut last_notify = Instant::now();
-        let mut buf = vec![0u8; 64 * 1024];
+        let mut buf = vec![0u8; CHUNK];
         loop {
-            let n = tokio::io::AsyncReadExt::read(&mut body, &mut buf)
-                .await
-                .context("read upload body")?;
+            let n = match tokio::io::AsyncReadExt::read(&mut body, &mut buf).await {
+                Ok(n) => n,
+                Err(e) => {
+                    // The peer went away: keep what is on disk and let the
+                    // sender resume from `done`.
+                    let _ = AsyncWriteExt::flush(&mut file).await;
+                    mgr.with_transfer(id, |t| {
+                        t.bytes_done = done;
+                        t.updated_at = now_secs();
+                    })
+                    .await;
+                    interrupted = true;
+                    return Err(anyhow::Error::new(e).context("read upload body"));
+                }
+            };
             if n == 0 {
                 break;
             }
@@ -144,7 +249,7 @@ where
             }
             AsyncWriteExt::write_all(&mut file, &buf[..n])
                 .await
-                .context("write temp file")?;
+                .context("write partial file")?;
             hasher.update(&buf[..n]);
 
             if done >= next_update {
@@ -156,10 +261,28 @@ where
                 };
                 match current {
                     Some(Status::Transferring) => {}
-                    Some(other) => {
-                        bail!("transfer {id} was interrupted (status={})", other.as_str())
+                    Some(
+                        status @ (Status::Cancelled
+                        | Status::Rejected
+                        | Status::Failed
+                        | Status::Completed),
+                    ) => {
+                        terminal = true;
+                        bail!(
+                            "transfer {id} was interrupted (status={})",
+                            status.as_str()
+                        )
                     }
-                    None => bail!("transfer {id} disappeared"),
+                    Some(other) => {
+                        bail!(
+                            "transfer {id} stopped streaming (status={})",
+                            other.as_str()
+                        )
+                    }
+                    None => {
+                        terminal = true;
+                        bail!("transfer {id} disappeared");
+                    }
                 }
                 let p = if expected_size > 0 {
                     done as f64 / expected_size as f64
@@ -199,7 +322,7 @@ where
         }
         AsyncWriteExt::flush(&mut file)
             .await
-            .context("flush temp file")?;
+            .context("flush partial file")?;
 
         // Size check (also enforces zero-byte offers).
         if done != expected_size {
@@ -214,7 +337,7 @@ where
             }
         }
 
-        file.sync_all().await.context("sync temp file")?;
+        file.sync_all().await.context("sync partial file")?;
         drop(file);
 
         // Reserve a collision-safe final name atomically, then publish.
@@ -225,11 +348,11 @@ where
         })
         .await
         .context("join path reservation")??;
-        if let Err(e) = tokio::fs::rename(&tmp, &final_path).await {
+        if let Err(e) = tokio::fs::rename(&part_path, &final_path).await {
             let _ = tokio::fs::remove_file(&final_path).await;
             return Err(anyhow::Error::new(e).context(format!(
                 "rename {} -> {}",
-                tmp.display(),
+                part_path.display(),
                 final_path.display()
             )));
         }
@@ -247,7 +370,11 @@ where
                 if t.status == Status::Transferring {
                     t.status = Status::Completed;
                     t.progress = 1.0;
+                    t.bytes_done = expected_size;
                     t.saved_path = Some(final_path.clone());
+                    // A completed transfer can never be resumed: burn the token.
+                    t.upload_token = None;
+                    t.part_path = None;
                     t.updated_at = now_secs();
                 }
             })
@@ -267,7 +394,18 @@ where
             Ok(final_path)
         }
         Err(e) => {
-            let _ = tokio::fs::remove_file(&tmp).await;
+            // A broken connection leaves the partial file in place so the
+            // sender can HEAD it and resume. Everything else is final.
+            if interrupted && !terminal {
+                warn!(
+                    "receive interrupted: {e:#} — kept {} for resume",
+                    part_path.display()
+                );
+                mgr.emit_update(id, "transfer_updated").await;
+                return Err(e);
+            }
+
+            let _ = tokio::fs::remove_file(&part_path).await;
             mgr.metrics.transfer_failed();
             warn!("receive failed: {e:#}");
             if notify_on {
@@ -281,19 +419,24 @@ where
             }
             let kind = mgr
                 .with_transfer(id, |t| match t.status {
-                    Status::Cancelled => FailKind::Cancelled,
-                    Status::Failed => FailKind::AlreadyFailed,
+                    Status::Cancelled | Status::Rejected | Status::Failed | Status::Completed => {
+                        FailKind::Terminal
+                    }
                     _ => {
                         t.status = Status::Failed;
                         t.error = Some(e.to_string());
                         t.updated_at = now_secs();
+                        // Protocol violation / unrecoverable write error: the
+                        // upload token must never be reusable.
+                        t.upload_token = None;
+                        t.part_path = None;
                         FailKind::Failed
                     }
                 })
                 .await;
             match kind {
                 Some(FailKind::Failed) => mgr.emit_update(id, "transfer_failed").await,
-                Some(_) => mgr.emit_update(id, "transfer_updated").await,
+                Some(FailKind::Terminal) => mgr.emit_update(id, "transfer_updated").await,
                 None => {}
             }
             Err(e)

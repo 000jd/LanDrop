@@ -142,8 +142,17 @@ pub struct Transfer {
     pub started_at: Option<std::time::Instant>,
     /// Per-transfer save directory (incoming, chosen by the user).
     pub save_dir: Option<PathBuf>,
-    /// One-time upload token (incoming, accepted).
+    /// One-time upload token (incoming, accepted). It stays valid while the
+    /// transfer is `Accepted` or `Transferring` so an interrupted upload can be
+    /// resumed, and is burned as soon as the transfer reaches a terminal state.
     pub upload_token: Option<String>,
+    /// Deterministic partial file: `.{filename}.part-{id}` in the destination
+    /// directory. Kept on disk across an interrupted upload so the sender can
+    /// resume from the byte offset reported by `HEAD`.
+    pub part_path: Option<PathBuf>,
+    /// True while an upload stream owns the partial file. Guards against two
+    /// concurrent streams writing the same `.part-{id}` file.
+    pub uploading: bool,
     /// Cancellation signal (outgoing). Incoming transfers are interrupted by
     /// the status check inside the receive loop.
     pub cancel: Option<watch::Sender<bool>>,
@@ -176,6 +185,8 @@ impl Transfer {
             started_at: None,
             save_dir: None,
             upload_token: None,
+            part_path: None,
+            uploading: false,
             cancel: None,
         }
     }
@@ -206,6 +217,8 @@ impl Transfer {
             started_at: None,
             save_dir: None,
             upload_token: None,
+            part_path: None,
+            uploading: false,
             cancel: None,
         }
     }
@@ -256,6 +269,42 @@ impl Transfer {
         };
         (self.bytes_done, speed, eta)
     }
+}
+
+/// Result of claiming the single upload slot for a transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UploadStart {
+    Started,
+    Unknown,
+    /// Another stream currently owns the partial file.
+    Busy,
+    InvalidToken,
+    NotUploadable,
+}
+
+/// Where an incoming file will be written: the per-transfer folder wins over
+/// the default download directory, and folder sends recreate their tree.
+pub(crate) fn destination_dir(
+    default_dir: &std::path::Path,
+    save_dir: Option<&std::path::Path>,
+    rel_path: Option<&str>,
+) -> PathBuf {
+    let base = save_dir.unwrap_or(default_dir).to_path_buf();
+    match rel_path.and_then(protocol::sanitize_rel_dirs) {
+        Some(dirs) => dirs.iter().fold(base, |dir, part| dir.join(part)),
+        None => base,
+    }
+}
+
+/// Deterministic partial file for a transfer (`.{filename}.part-{id}`).
+pub(crate) fn part_path_for(
+    default_dir: &std::path::Path,
+    save_dir: Option<&std::path::Path>,
+    rel_path: Option<&str>,
+    filename: &str,
+    id: &str,
+) -> PathBuf {
+    destination_dir(default_dir, save_dir, rel_path).join(format!(".{filename}.part-{id}"))
 }
 
 /// The transfer manager. Cheap to clone: all state lives behind `Arc`s.
@@ -364,28 +413,33 @@ impl TransferManager {
     /// waiting for or streaming the upload — the receive loop checks the
     /// status and aborts, and any unconsumed upload token is burned.
     pub async fn cancel(&self, id: &str) -> bool {
-        let mut map = self.transfers.write().await;
-        let Some(t) = map.get_mut(id) else {
-            return false;
-        };
-        let allowed = matches!(
-            t.status,
-            Status::Waiting | Status::Preparing | Status::Accepted | Status::Transferring
-        );
-        if !allowed {
-            return false;
-        }
-        if let Some(tx) = &t.cancel {
-            let _ = tx.send(true);
-        }
-        if t.direction == Direction::Incoming {
+        let (view, part) = {
+            let mut map = self.transfers.write().await;
+            let Some(t) = map.get_mut(id) else {
+                return false;
+            };
+            let allowed = matches!(
+                t.status,
+                Status::Waiting | Status::Preparing | Status::Accepted | Status::Transferring
+            );
+            if !allowed {
+                return false;
+            }
+            if let Some(tx) = &t.cancel {
+                let _ = tx.send(true);
+            }
+            // A cancelled transfer is terminal: the token can never be used
+            // again and the partial file must not be left behind.
             t.upload_token = None;
+            t.uploading = false;
+            t.status = Status::Cancelled;
+            t.updated_at = now_secs();
+            (t.view(), t.part_path.take())
+        };
+        if let Some(part) = part {
+            let _ = tokio::fs::remove_file(&part).await;
         }
-        t.status = Status::Cancelled;
-        t.updated_at = now_secs();
-        let v = t.view();
-        drop(map);
-        self.events.send("transfer_updated", &v);
+        self.events.send("transfer_updated", &view);
         true
     }
 
@@ -395,6 +449,7 @@ impl TransferManager {
         let now = now_secs();
         let mut expired: Vec<String> = Vec::new();
         let mut cancels: Vec<watch::Sender<bool>> = Vec::new();
+        let mut parts: Vec<PathBuf> = Vec::new();
         {
             let mut map = self.transfers.write().await;
             // A batch streams through a few slots, so files queued behind the
@@ -440,6 +495,13 @@ impl TransferManager {
                 t.status = Status::Failed;
                 t.error = Some(reason);
                 t.updated_at = now;
+                // Expiry is terminal: burn the token and remove the partial
+                // file this transfer may have been resuming from.
+                t.upload_token = None;
+                t.uploading = false;
+                if let Some(part) = t.part_path.take() {
+                    parts.push(part);
+                }
                 if let Some(tx) = &t.cancel {
                     cancels.push(tx.clone());
                 }
@@ -456,6 +518,9 @@ impl TransferManager {
         }
         for tx in cancels {
             let _ = tx.send(true);
+        }
+        for part in parts {
+            let _ = tokio::fs::remove_file(&part).await;
         }
         for id in expired {
             self.emit_update(&id, "transfer_failed").await;
@@ -579,6 +644,9 @@ impl TransferManager {
     pub async fn accept(&self, id: &str, save_dir: Option<PathBuf>) -> Result<()> {
         let token = uuid::Uuid::new_v4().to_string();
         let mut snippet_completed = false;
+        // Snapshot the default folder before taking the transfer lock (the
+        // receive path documents the same lock order: download_dir, transfers).
+        let default_dir = self.download_dir.read().await.clone();
         {
             let mut map = self.transfers.write().await;
             let t = map
@@ -600,11 +668,21 @@ impl TransferManager {
                 t.progress = 1.0;
                 t.save_dir = None;
                 t.upload_token = None;
+                t.part_path = None;
                 t.saved_path = None;
             } else {
                 t.status = Status::Accepted;
+                let part = part_path_for(
+                    &default_dir,
+                    save_dir.as_deref(),
+                    t.rel_path.as_deref(),
+                    &t.filename,
+                    &t.id,
+                );
                 t.save_dir = save_dir;
                 t.upload_token = Some(token);
+                t.part_path = Some(part);
+                t.uploading = false;
             }
             t.updated_at = now_secs();
         }
@@ -634,6 +712,8 @@ impl TransferManager {
                 bail!("transfer {id} is not pending");
             }
             t.status = Status::Rejected;
+            t.upload_token = None;
+            t.uploading = false;
             t.updated_at = now_secs();
         }
         self.emit_update(id, "transfer_updated").await;
@@ -641,26 +721,61 @@ impl TransferManager {
         Ok(())
     }
 
-    /// Atomically verify and consume the one-time upload token.
-    pub async fn take_upload_token(&self, id: &str, token: &str) -> bool {
-        let mut map = self.transfers.write().await;
-        let Some(t) = map.get_mut(id) else {
+    /// Verify the upload token **without consuming it**.
+    ///
+    /// The token stays valid while the transfer is `Accepted` or `Transferring`
+    /// so an interrupted upload can query its offset and resume.
+    pub async fn verify_upload_token(&self, id: &str, token: &str) -> bool {
+        let map = self.transfers.read().await;
+        let Some(t) = map.get(id) else {
             return false;
         };
-        let ok = match t.upload_token.as_deref() {
-            Some(expected) => constant_time_eq(expected.as_bytes(), token.as_bytes()),
-            // No token set: this request can never succeed, but still run a
-            // comparison so the "already used / never issued" case is not
-            // distinguishable by timing on the first call.
-            None => {
-                let _ = constant_time_eq(&[0u8; 32], token.as_bytes());
-                false
-            }
+        matches!(t.status, Status::Accepted | Status::Transferring)
+            && token_matches(t.upload_token.as_deref(), token)
+    }
+
+    /// Atomically verify the token and claim the single upload stream slot.
+    pub async fn begin_upload(&self, id: &str, token: &str) -> UploadStart {
+        let mut map = self.transfers.write().await;
+        let Some(t) = map.get_mut(id) else {
+            return UploadStart::Unknown;
         };
-        if ok {
-            t.upload_token = None;
+        // Check the token first: a terminal transfer has burned it, and a
+        // reused token must read as "invalid" rather than as a state conflict.
+        if !token_matches(t.upload_token.as_deref(), token) {
+            return UploadStart::InvalidToken;
         }
-        ok
+        if !matches!(t.status, Status::Accepted | Status::Transferring) {
+            return UploadStart::NotUploadable;
+        }
+        if t.uploading {
+            return UploadStart::Busy;
+        }
+        t.uploading = true;
+        UploadStart::Started
+    }
+
+    /// Release the upload slot after a stream exits (success or failure).
+    pub async fn reset_uploading(&self, id: &str) {
+        self.with_transfer(id, |t| t.uploading = false).await;
+    }
+
+    /// Current byte length of a transfer's partial file (`0` when it has not
+    /// been created yet). `None` means the transfer is unknown.
+    pub async fn upload_offset(&self, id: &str) -> Option<u64> {
+        let part = {
+            let map = self.transfers.read().await;
+            map.get(id)?.part_path.clone()
+        };
+        match part {
+            Some(path) => Some(
+                tokio::fs::metadata(&path)
+                    .await
+                    .map(|meta| meta.len())
+                    .unwrap_or(0),
+            ),
+            None => Some(0),
+        }
     }
 
     /// Acceptance status for a polling sender.
@@ -674,12 +789,25 @@ impl TransferManager {
     }
 
     /// Stream an upload body to a temp file, verifying size and checksum,
-    /// then atomically rename into the download dir.
-    pub async fn receive_stream<B>(&self, id: &str, body: B) -> Result<PathBuf>
+    /// then atomically rename into the download dir. `offset` resumes an
+    /// interrupted upload from that byte position.
+    pub async fn receive_stream<B>(&self, id: &str, body: B, offset: u64) -> Result<PathBuf>
     where
         B: tokio::io::AsyncRead + Unpin,
     {
-        self::receiver::receive_stream(self, id, body).await
+        self::receiver::receive_stream(self, id, body, offset).await
+    }
+}
+
+/// Constant-time token comparison (with a dummy comparison when no token is
+/// set, so "never issued" and "wrong token" are not distinguishable by timing).
+fn token_matches(expected: Option<&str>, provided: &str) -> bool {
+    match expected {
+        Some(expected) => constant_time_eq(expected.as_bytes(), provided.as_bytes()),
+        None => {
+            let _ = constant_time_eq(&[0u8; 32], provided.as_bytes());
+            false
+        }
     }
 }
 

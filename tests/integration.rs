@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use landrop::config::Config;
 use landrop::peers::{Peer, PeerStore};
-use landrop::protocol::{Offer, TransferView, UPLOAD_TOKEN_HEADER};
+use landrop::protocol::{Offer, TransferView, UPLOAD_OFFSET_HEADER, UPLOAD_TOKEN_HEADER};
 use landrop::server::{self, AppState};
 use landrop::transfer::TransferManager;
 use sha2::{Digest, Sha256};
@@ -1148,6 +1148,141 @@ async fn checksum_mismatch_fails_the_transfer() {
     if dl.exists() {
         assert!(dir_names(&dl).is_empty());
     }
+}
+
+#[tokio::test]
+async fn interrupted_upload_resumes_from_the_reported_offset() {
+    let dir = tempfile::tempdir().unwrap();
+    let dl = dir.path().join("dl");
+    let (state, port, _) = instance("bob", dl.clone()).await;
+    let base = format!("http://127.0.0.1:{port}");
+    let client = reqwest::Client::new();
+
+    let payload: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+    let mut hasher = Sha256::new();
+    hasher.update(&payload);
+    let sha = format!("{:x}", hasher.finalize());
+    let tid = offer_accepted(
+        &base,
+        &state,
+        "resume.bin",
+        payload.len() as u64,
+        Some(sha.clone()),
+    )
+    .await;
+    let token = upload_token(&state, &tid).await;
+    let url = format!("{base}/api/v1/upload/{tid}");
+    let part = dl.join(format!(".resume.bin.part-{tid}"));
+
+    // First attempt: send one chunk, wait until the receiver has written it,
+    // then break the body. This is the mid-stream failure a retry must survive.
+    let first_len = 64 * 1024usize;
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(4);
+    let attempt = {
+        let client = client.clone();
+        let url = url.clone();
+        let token = token.clone();
+        tokio::spawn(async move {
+            let body = reqwest::Body::wrap_stream(tokio_stream::wrappers::ReceiverStream::new(rx));
+            client
+                .post(&url)
+                .header(UPLOAD_TOKEN_HEADER, &token)
+                .header("Content-Type", "application/octet-stream")
+                .body(body)
+                .send()
+                .await
+        })
+    };
+    tx.send(Ok(bytes::Bytes::copy_from_slice(&payload[..first_len])))
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let len = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+        if len == first_len as u64 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "receiver never wrote the first chunk (part len {len})"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    tx.send(Err(std::io::Error::new(
+        std::io::ErrorKind::ConnectionReset,
+        "simulated network failure",
+    )))
+    .await
+    .unwrap();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), attempt).await;
+
+    // The partial file survives; HEAD reports its length without consuming
+    // the upload token.
+    assert!(
+        part.exists(),
+        "partial file must survive an interrupted upload"
+    );
+    assert_eq!(
+        state.transfers.upload_offset(&tid).await,
+        Some(first_len as u64)
+    );
+    let head = client
+        .head(&url)
+        .header(UPLOAD_TOKEN_HEADER, &token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(head.status(), reqwest::StatusCode::OK);
+    let offset: u64 = head
+        .headers()
+        .get(UPLOAD_OFFSET_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok())
+        .expect("HEAD carries the resume offset");
+    assert_eq!(offset, first_len as u64);
+
+    // Resume from that offset, retrying briefly in case the receiver has not
+    // noticed the dropped connection yet (409 while the old stream is alive).
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let resp = loop {
+        let resp = client
+            .post(&url)
+            .header(UPLOAD_TOKEN_HEADER, &token)
+            .header(UPLOAD_OFFSET_HEADER, offset.to_string())
+            .header("Content-Type", "application/octet-stream")
+            .body(payload[offset as usize..].to_vec())
+            .send()
+            .await
+            .unwrap();
+        if resp.status() != reqwest::StatusCode::CONFLICT {
+            break resp;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "receiver kept the old upload slot occupied"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    assert!(
+        resp.status().is_success(),
+        "resumed upload failed: {}",
+        resp.text().await.unwrap_or_default()
+    );
+
+    let done = wait_for_status(&state, &tid, "completed").await;
+    let saved = done.saved_path.expect("completed transfer has a path");
+    assert_eq!(std::fs::read(&saved).unwrap(), payload);
+    assert_eq!(sha256_of(std::path::Path::new(&saved)), sha);
+    assert!(!part.exists(), "the partial file is renamed into place");
+
+    // The token is burned once the transfer is complete.
+    let head = client
+        .head(&url)
+        .header(UPLOAD_TOKEN_HEADER, &token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(head.status(), reqwest::StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

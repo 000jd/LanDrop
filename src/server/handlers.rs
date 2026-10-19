@@ -22,9 +22,10 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
 use crate::peers::{parse_peer_addr_with, Peer};
-use crate::protocol::{AcceptInfo, Offer, TOKEN_HEADER, UPLOAD_TOKEN_HEADER};
+use crate::protocol::{AcceptInfo, Offer, TOKEN_HEADER, UPLOAD_OFFSET_HEADER, UPLOAD_TOKEN_HEADER};
 use crate::server::AppState;
 use crate::transfer::sender::spawn_send_in;
+use crate::transfer::UploadStart;
 
 /// Version reported by /api/info and the UI.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -821,7 +822,40 @@ pub async fn v1_offer_status(
     }
 }
 
-/// POST /api/v1/upload/{id} — stream the actual file.
+/// HEAD /api/v1/upload/{id} — report the resume offset of a partial upload.
+///
+/// Requires the upload token (when configured) but never consumes it, so a
+/// sender can ask repeatedly while reconnecting.
+pub async fn v1_upload_head(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(e) = check_shared_token(&state, &headers).await {
+        return err(e.0, e.1);
+    }
+    let token = match headers
+        .get(UPLOAD_TOKEN_HEADER)
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(t) => t.to_string(),
+        None => return err(StatusCode::UNAUTHORIZED, "missing upload token"),
+    };
+    if !state.transfers.verify_upload_token(&id, &token).await {
+        return err(StatusCode::UNAUTHORIZED, "invalid upload token");
+    }
+    let Some(offset) = state.transfers.upload_offset(&id).await else {
+        return err(StatusCode::NOT_FOUND, "unknown transfer");
+    };
+    let mut resp = StatusCode::OK.into_response();
+    resp.headers_mut().insert(
+        axum::http::HeaderName::from_static("x-landrop-offset"),
+        axum::http::HeaderValue::from(offset),
+    );
+    resp
+}
+
+/// POST /api/v1/upload/{id} — stream the actual file (or a resumed suffix).
 pub async fn v1_upload(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -831,7 +865,7 @@ pub async fn v1_upload(
     if let Err(e) = check_shared_token(&state, &headers).await {
         return err(e.0, e.1);
     }
-    // One-time upload token required.
+    // Upload token required; it stays valid until the transfer is terminal.
     let token = match headers
         .get(UPLOAD_TOKEN_HEADER)
         .and_then(|v| v.to_str().ok())
@@ -839,17 +873,53 @@ pub async fn v1_upload(
         Some(t) => t.to_string(),
         None => return err(StatusCode::UNAUTHORIZED, "missing upload token"),
     };
-    // Atomically verify and consume the one-time token.
-    if !state.transfers.take_upload_token(&id, &token).await {
-        return err(StatusCode::UNAUTHORIZED, "invalid upload token");
+    // Optional resume offset (default 0 = a fresh upload).
+    let offset = match headers
+        .get(UPLOAD_OFFSET_HEADER)
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(raw) => match raw.trim().parse::<u64>() {
+            Ok(offset) => offset,
+            Err(_) => return err(StatusCode::BAD_REQUEST, "invalid upload offset"),
+        },
+        None => 0,
+    };
+    // Atomically verify the token and claim the single upload slot. Two
+    // concurrent streams for one id must never write the same part file.
+    match state.transfers.begin_upload(&id, &token).await {
+        UploadStart::Started => {}
+        UploadStart::Unknown => return err(StatusCode::NOT_FOUND, "unknown transfer"),
+        UploadStart::InvalidToken => return err(StatusCode::UNAUTHORIZED, "invalid upload token"),
+        UploadStart::Busy => {
+            return err(
+                StatusCode::CONFLICT,
+                "another upload is already in progress",
+            )
+        }
+        UploadStart::NotUploadable => {
+            return err(StatusCode::CONFLICT, "transfer is not ready for an upload")
+        }
+    }
+    // A resume must start exactly where the partial file ends.
+    if offset > 0 {
+        match state.transfers.upload_offset(&id).await {
+            Some(len) if len == offset => {}
+            _ => {
+                state.transfers.reset_uploading(&id).await;
+                return err(
+                    StatusCode::CONFLICT,
+                    format!("offset {offset} does not match the partial file"),
+                );
+            }
+        }
     }
 
-    // Stream body -> temp file -> verify -> rename.
+    // Stream body -> partial file -> verify -> rename.
     let stream = body
         .into_data_stream()
         .map_err(|e| std::io::Error::other(format!("{e}")));
     let reader = tokio_util::io::StreamReader::new(stream);
-    match state.transfers.receive_stream(&id, reader).await {
+    match state.transfers.receive_stream(&id, reader, offset).await {
         Ok(path) => Json(json!({ "ok": true, "saved": path })).into_response(),
         Err(e) => err(StatusCode::BAD_REQUEST, e.to_string()),
     }

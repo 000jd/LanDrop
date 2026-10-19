@@ -14,11 +14,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
+use tokio::io::AsyncSeekExt;
 use tokio::sync::watch;
 use tracing::{error, info, warn};
 
 use crate::peers::Peer;
-use crate::protocol::{Offer, TOKEN_HEADER, UPLOAD_TOKEN_HEADER};
+use crate::protocol::{Offer, TOKEN_HEADER, UPLOAD_OFFSET_HEADER, UPLOAD_TOKEN_HEADER};
 use crate::transfer::{now_secs, Status, TransferManager};
 
 /// Poll interval while waiting for acceptance.
@@ -35,6 +36,12 @@ const MAX_PEER_BODY: u64 = 64 * 1024;
 const MIN_UPLOAD_BYTES_PER_SEC: u64 = 512 * 1024;
 /// Progress bookkeeping cadence (bytes).
 const PROGRESS_INTERVAL: u64 = 512 * 1024;
+/// Backoff before each resumed upload attempt (three retries after the first).
+const UPLOAD_RETRY_BACKOFF: [Duration; 3] = [
+    Duration::from_millis(500),
+    Duration::from_millis(1500),
+    Duration::from_millis(3000),
+];
 
 /// Generous upload deadline: 2 minutes plus one second per 512 KiB.
 fn upload_timeout(size: u64) -> Duration {
@@ -283,10 +290,8 @@ async fn run_send_inner(
         bail!("cancelled by user");
     }
 
-    // 3. Upload with progress.
-    let file = tokio::fs::File::open(local_path)
-        .await
-        .with_context(|| format!("open staged file {}", local_path.display()))?;
+    // 3. Upload with progress. A dropped connection asks the receiver where it
+    // stopped and resumes from that offset, up to three times with backoff.
     let total = offer.size;
 
     mgr.with_transfer(id, |t| {
@@ -311,6 +316,136 @@ async fn run_send_inner(
         format!("{base}{upload_url}")
     };
 
+    let mut offset: u64 = 0;
+    let mut last_error: Option<anyhow::Error> = None;
+    for attempt in 0..=UPLOAD_RETRY_BACKOFF.len() {
+        if attempt > 0 {
+            let backoff = UPLOAD_RETRY_BACKOFF[attempt - 1];
+            tokio::select! {
+                _ = tokio::time::sleep(backoff) => {}
+                _ = cancel_rx.changed() => {}
+            }
+            if *cancel_rx.borrow() {
+                bail!("cancelled by user");
+            }
+            offset = upload_offset(&client, &url, &shared, &upload_token).await?;
+            mgr.with_transfer(id, |t| {
+                if t.status == Status::Transferring {
+                    t.progress = if total > 0 {
+                        offset as f64 / total as f64
+                    } else {
+                        0.0
+                    };
+                    t.bytes_done = offset;
+                    t.started_at = Some(std::time::Instant::now());
+                    t.updated_at = now_secs();
+                }
+            })
+            .await;
+            mgr.emit_update(id, "transfer_updated").await;
+            info!("transfer {id}: resuming at {offset} bytes (retry {attempt})");
+        }
+        if *cancel_rx.borrow() {
+            bail!("cancelled by user");
+        }
+
+        match upload_once(
+            mgr,
+            id,
+            &client,
+            &url,
+            &upload_token,
+            &shared,
+            local_path,
+            total,
+            offset,
+            cancel_rx.clone(),
+        )
+        .await
+        {
+            Ok((status, _)) if status.is_success() => {
+                mgr.with_transfer(id, |t| {
+                    if t.status == Status::Transferring {
+                        t.status = Status::Completed;
+                        t.progress = 1.0;
+                        t.bytes_done = total;
+                        t.saved_path = None; // receiver keeps the file
+                        t.updated_at = now_secs();
+                    }
+                })
+                .await;
+                mgr.emit_update(id, "transfer_completed").await;
+                info!(
+                    "transfer {id} complete: {} -> {}:{}",
+                    offer.filename, peer.addr, peer.port
+                );
+                return Ok(());
+            }
+            Ok((status, text)) => {
+                // A definitive rejection is not a network hiccup: retrying
+                // would only resend the same unacceptable request.
+                if status.is_client_error() {
+                    bail!("upload failed ({}): {}", status, text.trim());
+                }
+                last_error = Some(anyhow!("upload failed ({status}): {}", text.trim()));
+            }
+            Err(e) => last_error = Some(e),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("upload failed after retries")))
+}
+
+/// Ask the receiver how many bytes of this transfer it already has.
+async fn upload_offset(
+    client: &reqwest::Client,
+    url: &str,
+    shared: &str,
+    upload_token: &str,
+) -> Result<u64> {
+    let mut req = client
+        .head(url)
+        .timeout(POLL_REQUEST_TIMEOUT)
+        .header(UPLOAD_TOKEN_HEADER, upload_token);
+    if !shared.is_empty() {
+        req = req.header(TOKEN_HEADER, shared);
+    }
+    let resp = req.send().await.context("resume offset request failed")?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = read_body(resp).await;
+        bail!("resume offset failed ({status}): {}", text.trim());
+    }
+    Ok(resp
+        .headers()
+        .get(UPLOAD_OFFSET_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(0))
+}
+
+/// One upload attempt starting at `offset`, streaming the remaining bytes.
+#[allow(clippy::too_many_arguments)]
+async fn upload_once(
+    mgr: &TransferManager,
+    id: &str,
+    client: &reqwest::Client,
+    url: &str,
+    upload_token: &str,
+    shared: &str,
+    local_path: &Path,
+    total: u64,
+    offset: u64,
+    cancel_rx: watch::Receiver<bool>,
+) -> Result<(reqwest::StatusCode, String)> {
+    let mut file = tokio::fs::File::open(local_path)
+        .await
+        .with_context(|| format!("open staged file {}", local_path.display()))?;
+    if offset > 0 {
+        file.seek(std::io::SeekFrom::Start(offset))
+            .await
+            .context("seek staged file")?;
+    }
+
     // Stream the file in 64 KiB chunks through a channel, tracking progress
     // and cancellation, while reqwest consumes the channel.
     let (chunk_tx, chunk_rx) =
@@ -319,9 +454,9 @@ async fn run_send_inner(
         let mgr = mgr.clone();
         let id = id.to_string();
         let mut reader = tokio::io::BufReader::new(file);
-        let mut cancel_rx = cancel_rx.clone();
-        let mut done: u64 = 0;
-        let mut next_progress: u64 = 0;
+        let mut cancel_rx = cancel_rx;
+        let mut done: u64 = offset;
+        let mut next_progress: u64 = done + PROGRESS_INTERVAL;
         let mut last_emit = Instant::now();
         let mut buf = vec![0u8; 64 * 1024];
         tokio::spawn(async move {
@@ -386,12 +521,15 @@ async fn run_send_inner(
 
     let body = reqwest::Body::wrap_stream(tokio_stream::wrappers::ReceiverStream::new(chunk_rx));
     let mut req = client
-        .post(&url)
-        .header(UPLOAD_TOKEN_HEADER, &upload_token)
+        .post(url)
+        .header(UPLOAD_TOKEN_HEADER, upload_token)
         .header("Content-Type", "application/octet-stream")
-        .timeout(upload_timeout(total));
+        .timeout(upload_timeout(total.saturating_sub(offset)));
+    if offset > 0 {
+        req = req.header(UPLOAD_OFFSET_HEADER, offset.to_string());
+    }
     if !shared.is_empty() {
-        req = req.header(TOKEN_HEADER, &shared);
+        req = req.header(TOKEN_HEADER, shared);
     }
     let resp = req
         .body(body)
@@ -400,25 +538,7 @@ async fn run_send_inner(
         .context("upload request failed")?;
     let status = resp.status();
     let text = read_body(resp).await;
-    if !status.is_success() {
-        bail!("upload failed ({}): {}", status, text.trim());
-    }
-
-    mgr.with_transfer(id, |t| {
-        if t.status == Status::Transferring {
-            t.status = Status::Completed;
-            t.progress = 1.0;
-            t.saved_path = None; // receiver keeps the file
-            t.updated_at = now_secs();
-        }
-    })
-    .await;
-    mgr.emit_update(id, "transfer_completed").await;
-    info!(
-        "transfer {id} complete: {} -> {}:{}",
-        offer.filename, peer.addr, peer.port
-    );
-    Ok(())
+    Ok((status, text))
 }
 
 /// Poll `GET /api/v1/offer/{id}` until accepted (or rejected/timeout/cancel).

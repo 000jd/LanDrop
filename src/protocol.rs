@@ -13,6 +13,8 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub const TOKEN_HEADER: &str = "X-LanDrop-Token";
 /// Header carrying the one-time upload token.
 pub const UPLOAD_TOKEN_HEADER: &str = "X-LanDrop-Upload-Token";
+/// Header reporting/requesting the resume offset of an interrupted upload.
+pub const UPLOAD_OFFSET_HEADER: &str = "X-LanDrop-Offset";
 
 /// Maximum length of a sanitized filename, in characters.
 const MAX_FILENAME_CHARS: usize = 160;
