@@ -67,6 +67,8 @@ impl SendBatch {
 pub struct SendMeta {
     pub batch: Option<SendBatch>,
     pub rel_path: Option<String>,
+    /// Snippet payload: no file is uploaded; the receiver completes on accept.
+    pub text: Option<String>,
 }
 
 /// Start an outgoing transfer in the background. Returns the transfer id.
@@ -117,6 +119,7 @@ pub async fn spawn_send_in(
         rel_path: meta.rel_path,
         batch_id: meta.batch.as_ref().map(|b| b.id.clone()),
         batch_name: meta.batch.as_ref().map(|b| b.name.clone()),
+        text: meta.text.clone(),
     };
 
     let id = {
@@ -256,8 +259,22 @@ async fn run_send_inner(
 
     // 2. Poll until accepted / rejected / timeout / cancel.
     let poll_url = format!("{base}/api/v1/offer/{remote_id}");
-    let (upload_url, upload_token) =
-        wait_for_acceptance(&client, &poll_url, &shared, &mut cancel_rx).await?;
+    let accepted = wait_for_acceptance(&client, &poll_url, &shared, &mut cancel_rx).await?;
+    let (upload_url, upload_token) = match accepted {
+        Some(pair) => pair,
+        None => {
+            // Snippet: the receiver already completed it.
+            mgr.with_transfer(id, |t| {
+                t.status = Status::Completed;
+                t.progress = 1.0;
+                t.updated_at = now_secs();
+            })
+            .await;
+            mgr.metrics.transfer_finished();
+            mgr.emit_update(id, "transfer_completed").await;
+            return Ok(());
+        }
+    };
 
     // Bounded streaming: a 500-file folder registers its offers immediately but
     // uploads through a few slots, so it cannot saturate the link or time out.
@@ -410,7 +427,7 @@ async fn wait_for_acceptance(
     poll_url: &str,
     shared: &str,
     cancel_rx: &mut watch::Receiver<bool>,
-) -> Result<(String, String)> {
+) -> Result<Option<(String, String)>> {
     let deadline = tokio::time::Instant::now() + crate::transfer::OFFER_TIMEOUT;
     loop {
         if *cancel_rx.borrow() {
@@ -429,12 +446,13 @@ async fn wait_for_acceptance(
                         if url.is_empty() || token.is_empty() {
                             bail!("receiver accepted but returned no upload_url/token");
                         }
-                        return Ok((url, token));
+                        return Ok(Some((url, token)));
                     }
                     "rejected" => bail!("receiver rejected the transfer"),
                     "cancelled" => bail!("receiver cancelled the transfer"),
                     "failed" => bail!("offer expired on the receiver"),
-                    "completed" => bail!("receiver already completed this transfer"),
+                    // A snippet is completed by the receiver's accept.
+                    "completed" => return Ok(None),
                     "pending" | "waiting" => {
                         tokio::select! {
                             _ = tokio::time::sleep(POLL_INTERVAL) => {}

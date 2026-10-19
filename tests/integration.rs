@@ -87,6 +87,7 @@ async fn offer_accepted(
             rel_path: None,
             batch_id: None,
             batch_name: None,
+            text: None,
         })
         .send()
         .await
@@ -659,6 +660,137 @@ async fn batch_accept_releases_every_member_in_one_request() {
 }
 
 #[tokio::test]
+async fn text_snippets_need_consent_and_write_no_file() {
+    // Sender and receiver are separate nodes; the receiver does not auto-accept.
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+    let node_a = landrop::app::start_node(landrop::app::NodeOptions {
+        port: Some(0),
+        downloads: Some(dir_a.path().join("dl").to_string_lossy().into_owned()),
+        config_dir: Some(dir_a.path().to_string_lossy().into_owned()),
+        no_mdns: true,
+        port_scan: false,
+        ..landrop::app::NodeOptions::default()
+    })
+    .await
+    .unwrap();
+    let node_b = landrop::app::start_node(landrop::app::NodeOptions {
+        port: Some(0),
+        downloads: Some(dir_b.path().join("dl").to_string_lossy().into_owned()),
+        config_dir: Some(dir_b.path().to_string_lossy().into_owned()),
+        no_mdns: true,
+        port_scan: false,
+        ..landrop::app::NodeOptions::default()
+    })
+    .await
+    .unwrap();
+    let client = reqwest::Client::new();
+    let target = format!("127.0.0.1:{}", node_b.addr.port());
+
+    let resp = client
+        .post(format!("{}/api/send-text", node_a.local_url()))
+        .json(&serde_json::json!({
+            "text": "https://example.com/holiday",
+            "targets": [target],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "send-text rejected: {resp:?}");
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["transfer_ids"].as_array().unwrap().len(), 1);
+
+    // Consent: it arrives as a normal waiting offer that carries the text.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let incoming = loop {
+        if let Some(t) = node_b
+            .state
+            .transfers
+            .list()
+            .await
+            .into_iter()
+            .find(|t| t.text.is_some())
+        {
+            break t;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "snippet never arrived"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    assert_eq!(incoming.status, "waiting", "a snippet still needs consent");
+    assert_eq!(
+        incoming.text.as_deref(),
+        Some("https://example.com/holiday"),
+        "the receiver sees the text"
+    );
+    assert!(incoming.size > 0);
+
+    // Accepting completes it immediately and writes nothing.
+    node_b
+        .state
+        .transfers
+        .accept(&incoming.id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        node_b
+            .state
+            .transfers
+            .get(&incoming.id)
+            .await
+            .unwrap()
+            .status,
+        "completed"
+    );
+    let downloads = dir_b.path().join("dl");
+    assert!(
+        !downloads.exists() || dir_names(&downloads).is_empty(),
+        "a snippet must not create a file"
+    );
+
+    // The sender sees its transfer completed too.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let outstanding = node_a
+            .state
+            .transfers
+            .list()
+            .await
+            .into_iter()
+            .filter(|t| {
+                matches!(
+                    t.status.as_str(),
+                    "preparing" | "waiting" | "accepted" | "transferring"
+                )
+            })
+            .count();
+        if outstanding == 0 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "sender did not settle"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    // Oversized text is refused.
+    let big = "x".repeat(landrop::protocol::MAX_TEXT_CHARS + 1);
+    let resp = client
+        .post(format!("{}/api/send-text", node_a.local_url()))
+        .json(&serde_json::json!({ "text": big, "targets": [target] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+
+    node_a.shutdown();
+    node_b.shutdown();
+}
+
+#[tokio::test]
 async fn metrics_endpoint_reports_counters() {
     let dir = tempfile::tempdir().unwrap();
     let (_, port, _) = instance("dave", dir.path().join("dl")).await;
@@ -744,6 +876,7 @@ async fn upload_without_accept_is_rejected_by_receiver() {
             rel_path: None,
             batch_id: None,
             batch_name: None,
+            text: None,
         })
         .send()
         .await
@@ -1188,6 +1321,7 @@ async fn offer_with_bad_sha256_is_rejected() {
             rel_path: None,
             batch_id: None,
             batch_name: None,
+            text: None,
         })
         .send()
         .await
@@ -1258,6 +1392,7 @@ async fn offer_pending(base: &str, filename: &str, size: u64) -> String {
             rel_path: None,
             batch_id: None,
             batch_name: None,
+            text: None,
         })
         .send()
         .await

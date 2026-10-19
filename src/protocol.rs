@@ -42,7 +42,14 @@ pub struct Offer {
     pub batch_id: Option<String>,
     #[serde(default)]
     pub batch_name: Option<String>,
+    /// Text/link payload. When set, the offer is a snippet: the receiver accepts
+    /// it and the transfer completes without any file upload.
+    #[serde(default)]
+    pub text: Option<String>,
 }
+
+/// Longest text snippet a peer may send (16 KiB of characters).
+pub const MAX_TEXT_CHARS: usize = 16_384;
 
 /// Streaming SHA-256 of a file (lower-case hex), used when a sender hands over a
 /// path instead of uploading bytes through the webview.
@@ -155,6 +162,8 @@ pub struct TransferView {
     /// Send batch (folder / selection) this file belongs to, if any.
     pub batch_id: Option<String>,
     pub batch_name: Option<String>,
+    /// Text/link payload for snippet transfers.
+    pub text: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -319,6 +328,22 @@ mod tests {
         assert_eq!(sanitize_filename("."), "unnamed-file");
         assert_eq!(sanitize_filename(""), "unnamed-file");
         assert_eq!(sanitize_filename("   "), "unnamed-file");
+    }
+
+    #[test]
+    fn text_offers_are_optional_and_round_trip() {
+        let plain: Offer =
+            serde_json::from_str(r#"{"sender_id":"s","sender_name":"n","filename":"f","size":1}"#)
+                .unwrap();
+        assert!(plain.text.is_none());
+
+        let snippet: Offer = serde_json::from_str(
+            r#"{"sender_id":"s","sender_name":"n","filename":"Text: hi","size":2,
+                "text":"hi"}"#,
+        )
+        .unwrap();
+        assert_eq!(snippet.text.as_deref(), Some("hi"));
+        assert_eq!(snippet.filename, "Text: hi");
     }
 
     #[test]

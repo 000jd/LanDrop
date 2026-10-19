@@ -475,6 +475,7 @@ pub async fn api_send(
         let meta = crate::transfer::sender::SendMeta {
             batch: batch.clone(),
             rel_path: rel_path.clone(),
+            text: None,
         };
         match spawn_send_in(
             meta,
@@ -1175,6 +1176,124 @@ pub async fn api_reject_batch(
     Json(json!({ "rejected": rejected })).into_response()
 }
 
+/// Body for `POST /api/send-text`.
+#[derive(Debug, serde::Deserialize)]
+pub struct SendTextBody {
+    text: String,
+    #[serde(default)]
+    targets: Vec<String>,
+}
+
+/// Send a text snippet or link to one or more devices.
+///
+/// Consent is unchanged: the receiver sees a normal offer and must accept it,
+/// after which the transfer completes without writing anything to disk.
+pub async fn api_send_text(
+    State(state): State<AppState>,
+    ConnectInfo(request_addr): ConnectInfo<SocketAddr>,
+    Json(body): Json<SendTextBody>,
+) -> Response {
+    let text = body.text.trim_end().to_string();
+    if text.trim().is_empty() {
+        return err(StatusCode::BAD_REQUEST, "text is required");
+    }
+    if text.chars().count() > crate::protocol::MAX_TEXT_CHARS {
+        return err(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "text is limited to {} characters",
+                crate::protocol::MAX_TEXT_CHARS
+            ),
+        );
+    }
+    let targets = if body.targets.is_empty() {
+        state.ui_selection.read().await.clone()
+    } else {
+        body.targets.clone()
+    };
+    if targets.is_empty() {
+        return err(StatusCode::CONFLICT, "no device selected");
+    }
+    let peers = match resolve_peers(&state, &targets, is_local_peer(&request_addr)).await {
+        Ok(peers) if !peers.is_empty() => peers,
+        Ok(_) => return err(StatusCode::CONFLICT, "no device selected"),
+        Err(e) => return err(StatusCode::BAD_REQUEST, e),
+    };
+
+    // Readable name for the transfer list and the receiver's prompt.
+    let first_line = text.lines().next().unwrap_or("").trim();
+    let preview = crate::protocol::truncate_chars(first_line, 32);
+    let filename = if preview.is_empty() {
+        "Text snippet".to_string()
+    } else {
+        format!("Text: {preview}")
+    };
+
+    let mut ids = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    for peer in peers {
+        let meta = crate::transfer::sender::SendMeta {
+            text: Some(text.clone()),
+            ..Default::default()
+        };
+        // Never created: snippets have no file to stream or clean up.
+        let staged = staging_dir_for(state.config_dir.as_deref())
+            .join(format!(".text-{}", uuid::Uuid::new_v4()));
+        match spawn_send_in(
+            meta,
+            &state.transfers,
+            peer.clone(),
+            filename.clone(),
+            text.len() as u64,
+            None,
+            staged,
+        )
+        .await
+        {
+            Ok(id) => ids.push(id),
+            Err(e) => errors.push(format!("{}: {e}", peer.name)),
+        }
+    }
+    if ids.is_empty() {
+        let reason = errors
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "no targets".to_string());
+        return err(StatusCode::INTERNAL_SERVER_ERROR, reason);
+    }
+    Json(json!({ "transfer_ids": ids, "errors": errors })).into_response()
+}
+
+/// Resolve peer ids or `ip:port` targets into peers.
+async fn resolve_peers(
+    state: &AppState,
+    targets: &[String],
+    allow_loopback: bool,
+) -> Result<Vec<Peer>, String> {
+    let mut peers: Vec<Peer> = Vec::new();
+    for target in targets {
+        let peer = match state.peers.find(target).await {
+            Some(peer) => peer,
+            None => {
+                let my_port = *state.transfers.my_port.read().await;
+                let socket = parse_peer_addr_with(target, my_port, allow_loopback)
+                    .map_err(|e| format!("unknown target: {e}"))?;
+                Peer {
+                    id: format!("manual-{socket}"),
+                    name: socket.ip().to_string(),
+                    addr: socket.ip().to_string(),
+                    port: socket.port(),
+                    source: "manual".into(),
+                }
+            }
+        };
+        if !peers.iter().any(|p| p.id == peer.id) {
+            peers.push(peer);
+        }
+    }
+    Ok(peers)
+}
+
 /// Process-wide counters since startup (transfers, bytes moved).
 pub async fn api_metrics(State(state): State<AppState>) -> Response {
     Json(state.transfers.metrics.snapshot()).into_response()
@@ -1386,6 +1505,7 @@ pub async fn api_send_path(
                 crate::transfer::sender::SendMeta {
                     batch: Some(batch.clone()),
                     rel_path: rel_dir.clone(),
+                    text: None,
                 },
                 &state.transfers,
                 peer.clone(),

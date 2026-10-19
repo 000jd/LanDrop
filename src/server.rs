@@ -103,6 +103,7 @@ pub fn router(state: AppState) -> Router {
         // desktop window sends dropped paths to them.
         .route("/api/ui/selection", post(handlers::api_ui_selection))
         .route("/api/send-path", post(handlers::api_send_path))
+        .route("/api/send-text", post(handlers::api_send_text))
         .route("/api/downloads/open", post(handlers::api_open_downloads))
         // Folder picker (machine-local): list subdirectories / create one.
         .route("/api/fs/list", get(handlers::api_list_dirs))

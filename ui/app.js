@@ -592,6 +592,13 @@ function transferCard(t) {
   const saved = t.saved_path ? `<div class="saved-path">Saved: ${esc(t.saved_path)}</div>` : "";
   const err = t.error ? `<div class="t-err">${esc(t.error)}</div>` : "";
   const dir = t.direction === "incoming" ? "from" : "to";
+  const isLink = t.text ? /^https?:\/\/\S+$/i.test(t.text.trim()) : false;
+  const snippet = t.text
+    ? `<div class="snippet"><pre class="text-preview">${esc(t.text)}</pre><div class="t-actions">
+         <button class="btn ghost sm" data-copy="${esc(t.id)}" type="button">Copy</button>
+         ${isLink ? `<a class="btn ghost sm" href="${esc(t.text.trim())}" target="_blank" rel="noopener noreferrer">Open link</a>` : ""}
+       </div></div>`
+    : "";
   return `
     <div class="transfer status-${esc(t.status)}">
       <div class="t-head">
@@ -607,6 +614,7 @@ function transferCard(t) {
         <span class="t-status">${STATUS_TEXT[t.status] || esc(t.status)}</span>
       </div>
       ${showProgress ? `<div class="progress"><div style="width:${pct}%"></div></div><div class="pct">${pct}%${rate}${eta}</div>` : ""}
+      ${snippet}
       ${saved}
       ${canCancel ? `<div class="t-actions"><button class="btn ghost sm" data-cancel="${esc(t.id)}">Cancel</button></div>` : ""}
       ${canAccept ? `<div class="t-actions">
@@ -711,6 +719,41 @@ async function sendFiles() {
     btn.disabled = false;
     btn.textContent = "Send";
     updateSendTargetLabel();
+  }
+}
+
+async function sendText() {
+  const el = $("textToSend");
+  const text = el.value.trim();
+  if (!text) { toast("Type or paste something first", "warn"); return; }
+  const targets = sendTargets().map((t) => t.address);
+  const btn = $("sendTextBtn");
+  btn.disabled = true;
+  try {
+    const res = await api("/api/send-text", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(targets.length ? { text, targets } : { text }),
+    });
+    el.value = "";
+    const sent = (res && res.transfer_ids && res.transfer_ids.length) || 1;
+    toast(sent > 1 ? `Text sent to ${sent} devices` : "Text sent", "success");
+    await loadTransfers();
+  } catch (e) {
+    toast("Send failed: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function copySnippet(id) {
+  const t = state.transfers.find((x) => x.id === id);
+  if (!t || !t.text) return;
+  try {
+    await navigator.clipboard.writeText(t.text);
+    toast("Copied to the clipboard", "success");
+  } catch {
+    toast("Clipboard is not available here", "error");
   }
 }
 
@@ -1220,6 +1263,7 @@ function init() {
     if (choice && choice.action === "use") $("setDownloads").value = choice.path;
   };
   $("sendBtn").onclick = sendFiles;
+  $("sendTextBtn").onclick = sendText;
   $("addManualBtn").onclick = addManualPeer;
   $("manualAddr").oninput = updateSendTargetLabel;
   $("saveSettingsBtn").onclick = saveSettings;
@@ -1231,10 +1275,12 @@ function init() {
     const cancel = e.target.closest("[data-cancel]");
     const accept = e.target.closest("[data-accept]");
     const reject = e.target.closest("[data-reject]");
+    const copy = e.target.closest("[data-copy]");
     const acceptBatchBtn = e.target.closest("[data-accept-batch]");
     const rejectBatchBtn = e.target.closest("[data-reject-batch]");
     const cancelBatchBtn = e.target.closest("[data-cancel-batch]");
-    if (acceptBatchBtn) acceptBatch(acceptBatchBtn.dataset.acceptBatch);
+    if (copy) copySnippet(copy.dataset.copy);
+    else if (acceptBatchBtn) acceptBatch(acceptBatchBtn.dataset.acceptBatch);
     else if (rejectBatchBtn) rejectBatch(rejectBatchBtn.dataset.rejectBatch);
     else if (cancelBatchBtn) cancelBatch(cancelBatchBtn.dataset.cancelBatch);
     else if (cancel) cancelTransfer(cancel.dataset.cancel);

@@ -134,6 +134,8 @@ pub struct Transfer {
     /// send so the receiver asks once.
     pub batch_id: Option<String>,
     pub batch_name: Option<String>,
+    /// Snippet payload (no upload follows; accepting completes the transfer).
+    pub text: Option<String>,
     /// Bytes streamed so far (for speed / ETA).
     pub bytes_done: u64,
     /// When streaming started (monotonic, for smooth speed/ETA).
@@ -169,6 +171,7 @@ impl Transfer {
             rel_path: offer.rel_path.clone(),
             batch_id: offer.batch_id.clone(),
             batch_name: offer.batch_name.clone(),
+            text: offer.text.clone(),
             bytes_done: 0,
             started_at: None,
             save_dir: None,
@@ -198,6 +201,7 @@ impl Transfer {
             rel_path: None,
             batch_id: offer.batch_id.clone(),
             batch_name: offer.batch_name.clone(),
+            text: offer.text.clone(),
             bytes_done: 0,
             started_at: None,
             save_dir: None,
@@ -229,6 +233,7 @@ impl Transfer {
             created_at: self.created_at,
             batch_id: self.batch_id.clone(),
             batch_name: self.batch_name.clone(),
+            text: self.text.clone(),
             updated_at: self.updated_at,
         }
     }
@@ -587,9 +592,18 @@ impl TransferManager {
                     t.status.as_str()
                 );
             }
-            t.status = Status::Accepted;
-            t.save_dir = save_dir;
-            t.upload_token = Some(token);
+            if t.text.is_some() {
+                // A snippet has no file behind it: accept == done.
+                t.status = Status::Completed;
+                t.progress = 1.0;
+                t.save_dir = None;
+                t.upload_token = None;
+                t.saved_path = None;
+            } else {
+                t.status = Status::Accepted;
+                t.save_dir = save_dir;
+                t.upload_token = Some(token);
+            }
             t.updated_at = now_secs();
         }
         self.emit_update(id, "transfer_updated").await;
@@ -708,6 +722,7 @@ mod tests {
             rel_path: None,
             batch_id: None,
             batch_name: None,
+            text: None,
         }
     }
 
@@ -724,6 +739,7 @@ mod tests {
             rel_path: None,
             batch_id: Some("batch-1".into()),
             batch_name: Some("folder".into()),
+            text: None,
         };
 
         let mut queued = Transfer::new_incoming(&offer("a.bin"), "10.0.0.2".into());
