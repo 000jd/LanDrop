@@ -24,9 +24,9 @@ env:
   TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
-  # Linux is the primary target: CI builds the standalone CLI and the Tauri
-  # desktop bundles here. The locally built Android APK is merged by the publish
-  # job when SHA256SUMS.txt is regenerated.
+  # Linux release artifacts: standalone CLI plus the Tauri desktop bundles.
+  # The locally built Android APK is merged by the publish job when
+  # SHA256SUMS.txt is regenerated.
   linux:
     name: Linux x86_64
     runs-on: ubuntu-22.04
