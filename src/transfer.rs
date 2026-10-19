@@ -538,6 +538,43 @@ impl TransferManager {
         }
     }
 
+    /// Remove every terminal transfer from the in-memory history.
+    ///
+    /// Active, accepted and waiting transfers are untouched. Returns how many
+    /// entries disappeared.
+    pub async fn clear_terminal(&self) -> usize {
+        let mut parts: Vec<PathBuf> = Vec::new();
+        let removed = {
+            let mut map = self.transfers.write().await;
+            let before = map.len();
+            map.retain(|_, t| {
+                let terminal = matches!(
+                    t.status,
+                    Status::Completed | Status::Failed | Status::Cancelled | Status::Rejected
+                );
+                if terminal {
+                    if let Some(part) = t.part_path.take() {
+                        parts.push(part);
+                    }
+                }
+                !terminal
+            });
+            before - map.len()
+        };
+        // Terminal transfers normally have no partial file left; remove any
+        // residue a previous failure path might have missed.
+        for part in parts {
+            let _ = tokio::fs::remove_file(&part).await;
+        }
+        if removed > 0 {
+            self.events.send(
+                "transfers_cleared",
+                &serde_json::json!({ "cleared": removed }),
+            );
+        }
+        removed
+    }
+
     // -- incoming ----------------------------------------------------------
 
     /// Handle an incoming offer: validate it, create a pending transfer and

@@ -69,6 +69,10 @@ Enforced by `protocol::tests::sanitize_strips_paths_and_dots`,
 |---|---|---|
 | `POST /api/quit` | quits this node; used by a newer build to retire an older copy | `is_local_peer` (403 otherwise) + `integration::focus_and_quit_endpoints_drive_the_window_and_the_node` |
 | `POST /api/window/focus` | raises the running window (desktop only, 501 in browser/CLI mode) | `is_local_peer` + the same integration test |
+| `POST /api/peers/trust` | adds/removes a trusted device id | `is_local_peer` gate in the handler; exposed by `integration::trusted_peers_auto_accept_and_expose_pins` |
+| `POST /api/transfers/clear` | forgets terminal history (never deletes saved files) | `is_local_peer` gate + `integration::clear_history_keeps_active_transfers_and_saved_files` |
+| `POST/GET /api/ui/shared-inbox` | queues/drains Android share-sheet paths and text; only existing absolute files are accepted | `is_local_peer` gate + `integration::shared_inbox_queues_files_and_text_for_the_ui` |
+| Share-link create/revoke | stages a browser-download file for 15 minutes; only this machine may create or revoke one | `is_local_peer` gates + `integration::qr_codes_and_browser_share_links` |
 | `POST /api/settings`, folder picker, "open download folder" | machine-local by design | `is_local_peer` gates in the handlers |
 | Cross-origin browser requests and non-IP `Host` headers | rejected globally | `integration::cross_site_requests_are_rejected` |
 
@@ -77,9 +81,36 @@ Enforced by `protocol::tests::sanitize_strips_paths_and_dots`,
 | Rule | Enforced by |
 |---|---|
 | Upload without an accepted offer is refused | `integration::upload_without_accept_is_rejected_by_receiver` |
-| The upload token is single-use | `integration::upload_token_is_single_use` |
+| The upload token stays valid for a resume but is burned on completion/protocol failure | `integration::upload_token_is_single_use`, `interrupted_upload_resumes_from_the_reported_offset`, `oversized_upload_is_rejected_and_not_saved`, `checksum_mismatch_fails_the_transfer` |
+| A second concurrent stream for one transfer is `409` | `TransferManager::begin_upload` (`uploading` flag); not separately integration-tested |
+| `HEAD` reports the partial file length without consuming the token | `integration::interrupted_upload_resumes_from_the_reported_offset` |
+| A resume offset must match the on-disk partial file; a short read keeps the partial file, a clean short EOF fails it | same test + `src/transfer/receiver.rs` error paths |
 | Declared size is enforced while streaming (`size: 0` included) | `integration::oversized_upload_is_rejected_and_not_saved`, `zero_size_offer_rejects_nonempty_body` |
 | SHA-256 mismatch fails the transfer | `integration::checksum_mismatch_fails_the_transfer`, `offer_with_bad_sha256_is_rejected` |
 | Same-name transfers never overwrite each other | `integration::concurrent_same_name_transfers_do_not_overwrite` |
 | Cancel interrupts an in-flight receive and stays cancelled | `integration::cancel_interrupts_incoming_receive`, `cancelled_send_stops_and_stays_cancelled` |
+| A text snippet still requires consent and writes no file | `integration::text_snippets_need_consent_and_write_no_file` |
 | JSON bodies are capped (64 KiB) | `integration::oversized_json_body_is_rejected` |
+
+## Verification PINs and trusted peers
+
+```
+PIN = SHA-256("{sender_id}:{receiver_id}:{batch_id or filename:size}")
+      first 4 bytes, big-endian, mod 1_000_000 -> "NNN-NNN"
+```
+
+| Rule | Enforced by |
+|---|---|
+| PIN derivation is deterministic, padded and keyed by batch/file | `protocol::tests::transfer_pin_is_deterministic_and_padded` |
+| Every transfer view carries a PIN, including batches | `integration::trusted_peers_auto_accept_and_expose_pins` |
+| Trusted-only auto-accept accepts a listed sender and leaves strangers waiting | `integration::trusted_peers_auto_accept_and_expose_pins` |
+| `POST /api/peers/trust` toggles the flag exposed by `GET /api/peers` and persists it | same test |
+| The PIN is a human verification aid, not authorization (the upload token remains required) | `upload_without_accept_is_rejected_by_receiver`, `upload_token_is_single_use` |
+
+## Share sheet inbox
+
+| Rule | Enforced by |
+|---|---|
+| Only absolute paths that exist and are regular files are queued | `integration::shared_inbox_queues_files_and_text_for_the_ui` |
+| The queue is drained exactly once and returns paths + text | same test |
+| Empty payloads are `400`, oversized text is `413` | same test |

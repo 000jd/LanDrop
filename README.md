@@ -146,11 +146,26 @@ no install at all.
   header shows "2 devices") and every queued file goes to each of them — one
   device works exactly as before, and a partial failure names the device it
   failed for.
+- **Text and links**: paste a URL or snippet and send it like a file. The
+  receiver sees it as a normal offer, can read, copy or open it in the app, and
+  nothing is written to disk.
+- **QR onboarding and browser download links**: `GET /api/qr` renders the node's
+  LAN URL (or a live share link) as an inline SVG, and `POST /api/share-link`
+  stages a file behind a 15-minute `/d/{token}` URL that any browser on the
+  network can open — no LanDrop install required on the phone.
+- **Resumable uploads**: a dropped connection keeps the partial file on the
+  receiver. The sender asks `HEAD /api/v1/upload/{id}` for the current offset and
+  resumes with `X-LanDrop-Offset`; the SHA-256 still covers the whole file.
+- **Verification PIN + trusted devices**: every transfer/batch shows a
+  `NNN-NNN` PIN derived from sender, receiver and batch/file, so both people can
+  confirm they are looking at the same transfer. Mark a device as trusted (or
+  enable "auto-accept from trusted devices only") to skip the prompt for it.
 - Any file type; streaming transfer (no full-file buffering)
 - SHA-256 integrity check; the declared size is enforced while streaming;
   collision-safe filenames (`file.txt`, `file-1.txt`, …)
-- One-time upload token per transfer, consumed atomically — no accounts, no
-  login, no shared secret required: the app is open on your LAN by design
+- One-time upload token per transfer — valid while the transfer is accepted or
+  streaming, then burned on completion, cancellation or rejection. No accounts,
+  no login, no shared secret required: the app is open on your LAN by design
 - Live UI updates over Server-Sent Events (SSE), including throttled progress;
   polling only as a fallback while SSE is unavailable
 - **Quiet monochrome UI** (soft grey surfaces, hairline borders, pill chips whose
@@ -160,7 +175,10 @@ no install at all.
   default
 - Desktop notifications for incoming requests, and a progress-bar notification
   while receiving (`notify-send` / notification daemon)
-- Persistent settings (name, port, download dir) in
+- **Android share sheet**: share files or text from any app straight into LanDrop
+  (`ACTION_SEND` / `ACTION_SEND_MULTIPLE`), and a Wi-Fi `MulticastLock` keeps
+  mDNS discovery receiving while the app is visible
+- Persistent settings (name, port, download dir, trusted devices) in
   `~/.config/landrop/config.toml`; CLI flags apply to a single run only
 - Private, auto-cleaned staging for outgoing files (no leftover copies)
 - Tauri desktop wrapper with tray icon, **single instance** (a second launch
@@ -176,7 +194,7 @@ no install at all.
 | Linux | Primary target: desktop app (`.deb` / `.rpm` / `.AppImage`) and browser mode |
 | Windows | Browser mode (`cargo build --release`) |
 | macOS | Browser mode |
-| Android | Signed APK with the same UI and features (aarch64), no runtime permissions |
+| Android | Signed APK with the same UI and features (aarch64), system share sheet, no runtime permissions |
 
 ## Build
 
@@ -257,11 +275,18 @@ timestamped (`LanDrop-arm64-2026-10-15-2043.apk`) to avoid this — and after
 installing, **Settings → This device → Version** shows the build time, so you can
 tell instantly which copy is running.
 
-What works: discovery (UDP beacon + mDNS), sending, accepting/rejecting, the
-folder picker, speed/ETA, SSE live updates, settings, progress in the UI. The
-backend runs inside the app process and the webview talks to it on `127.0.0.1`
-(cleartext is allowed for localhost only, via
+What works: discovery (UDP beacon + mDNS), sending, accepting/rejecting, text
+snippets, QR codes and browser share links, resumable uploads, verification PINs
+and trusted peers, the folder picker, speed/ETA, SSE live updates, settings and
+progress in the UI. The backend runs inside the app process and the webview talks
+to it on `127.0.0.1` (cleartext is allowed for localhost only, via
 `desktop/gen/android/.../network_security_config.xml`).
+
+The system **share sheet** is wired in: sending files or text from another app
+to LanDrop copies the streams into the app's private `cacheDir/shared` folder
+(using the source's display name) and posts the paths/text to the local
+`/api/ui/shared-inbox` queue. The UI drains that queue and treats the files like
+a normal selection; text lands in the snippet box.
 
 Mobile behaviour to know about:
 
@@ -270,11 +295,13 @@ Mobile behaviour to know about:
   reachable over USB and by file managers; the in-app folder picker starts there
   (scoped storage hides most of the rest of the device, so a system-wide folder
   picker would need Android's SAF, which is a follow-up).
+- A Wi-Fi `MulticastLock` is acquired in `onResume()` and released in
+  `onPause()`, so mDNS discovery keeps receiving on networks that filter
+  multicast while the app is visible.
 - No tray and no system-dialog prompt: the in-app UI shows incoming requests, and
   the activity strip keeps the progress visible from any tab.
 - Keep the app open while transferring — Android may suspend background apps. A
-  foreground service (background receiving) is on the roadmap, as is acquiring
-  the Wi-Fi multicast lock for networks that filter multicast.
+  foreground service (background receiving) is on the roadmap.
 
 ## Updating an installed copy
 
@@ -318,10 +345,10 @@ process is gone. Two things make that visible instead of confusing:
   it. Anyone on the same network who knows your port can offer files (they still
   need your **Accept** click) and can open the local UI. This is intentional:
   LanDrop is a no-account, no-login tool for trusted networks.
-- **Settings are machine-local**: changing the device name, port, download
-  folder, auto-accept or autostart is only accepted from the machine running
-  LanDrop. A phone on the LAN can send, accept and reject, but cannot rewrite
-  settings.
+- **Settings and trust are machine-local**: changing the device name, port,
+  download folder, auto-accept, trusted devices or autostart is only accepted
+  from the machine running LanDrop. A phone on the LAN can send, accept and
+  reject, but cannot rewrite settings or mark itself trusted.
 - **Browser-safe**: cross-origin requests are rejected and `Host` headers must be
   a plain IP/localhost, so a website you happen to visit cannot drive the local
   API (CSRF / DNS rebinding). The bundled UI ships a strict CSP.
@@ -335,20 +362,31 @@ process is gone. Two things make that visible instead of confusing:
   cannot point the app at itself or at another local service.
 - Save folders may not be system directories (`/etc`, `/usr`, `/boot`, `/var`, …);
   home folders, removable media and temp folders stay allowed.
-- The desktop helpers `POST /api/quit` (retire an older copy) and
-  `POST /api/window/focus` (raise the running window) are **local-only** and
-  answer `403` to anything that does not come from this machine.
+- The desktop helpers `POST /api/quit` (retire an older copy),
+  `POST /api/window/focus` (raise the running window),
+  `POST /api/peers/trust`, `POST /api/transfers/clear` and the Android
+  `/api/ui/shared-inbox` queue are **local-only** and answer `403` to anything
+  that does not come from this machine.
 - Every rule above has a test; [docs/security-tests.md](docs/security-tests.md)
   maps them, including the transcripts they came from.
 - Outgoing files are staged in a private `outbox` directory under the config dir
   (mode 0700) and deleted once the transfer ends; uploads never buffer a whole
   file in memory.
-- Each accepted transfer uses a one-time upload token, consumed atomically on
-  first use; no persistent credentials are stored. Link-local, multicast and
+- Each accepted transfer uses a one-time upload token. It stays valid while the
+  transfer is accepted or streaming so a resume can verify itself, and is burned
+  on completion, cancellation, rejection, oversized bodies and checksum
+  failures; no persistent credentials are stored. A resume offset must match the
+  on-disk partial file exactly (`409` otherwise). Link-local, multicast and
   unspecified targets are refused, so the app can't be aimed at metadata
   endpoints or broadcast addresses.
+- The verification PIN is a human check, not an authentication factor: it stops
+  someone from talking you into the wrong transfer, but possession of the upload
+  token remains the actual authorization. Trusted peers are an explicit,
+  machine-local convenience and never override the shared-token setting.
 - JSON request bodies are capped at 64 KiB; only the file-upload routes stream
-  unbounded data, with free-space guards on both sides.
+  unbounded data, with free-space guards on both sides. Four uploads stream at a
+  time per sender, so a large selection cannot open an unbounded number of
+  parallel connections.
 
 ## Configuration
 
@@ -361,6 +399,8 @@ name = "laptop"
 port = 8420
 downloads = "/home/me/Downloads/LanDrop"
 auto_accept = false
+auto_accept_trusted_only = false
+trusted_peers = []      # device ids that may skip the accept prompt
 ask_save_path = false   # ask for a folder when accepting each incoming file
 manual_peers = ["192.168.1.25:8420"]
 ```
@@ -533,51 +573,88 @@ landrop/
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /api/info` | device id, name, port, download dir, version, build, LAN IPs, free/total disk space |
-| `GET /api/peers` | discovered + manual peers |
+| `GET /api/peers` | discovered + manual peers, each with `trusted`, `reachable` |
 | `POST /api/peers/manual` | add a manual peer (`{"address":"ip:port"}`) |
+| `POST /api/peers/trust` | trust/untrust a device (`{"peer_id":"…","trusted":true}`, local-only) |
 | `GET /api/transfers` | all transfers |
+| `POST /api/transfers/clear` | drop completed/failed/cancelled/rejected history (local-only; files stay) |
 | `POST /api/send` | start a send (multipart: repeat `target` for several devices, `file`, optional `rel_path`, `batch_id`, `batch_name`) |
 | `POST /api/send-path` | send local files/folders by path (desktop drop; walks folders, local-only) |
+| `POST /api/send-text` | send a text/link snippet (`{"text":"…","targets":["ip:port"]}`) |
 | `POST /api/transfers/{id}/cancel` | cancel |
 | `POST /api/transfers/{id}/accept` | accept incoming (optional `{"save_dir": "/path"}`) |
 | `POST /api/transfers/{id}/reject` | reject incoming |
 | `GET /api/fs/list?path=…` | browse subfolders (folder picker) |
 | `POST /api/fs/mkdir` | create a folder from the picker |
-| `GET /api/events` | SSE stream (`peer_updated`, `transfer_updated`, …) |
-| `POST /api/batches/{id}/accept` · `/reject` | accept or reject a whole folder/batch in one request |
+| `GET /api/events` | SSE stream (`peer_updated`, `transfer_updated`, `transfers_cleared`, …) |
+| `POST /api/batches/{id}/accept` · `/reject` · `/cancel` | accept, reject or cancel a whole folder/batch in one request |
+| `GET /api/qr` | inline SVG QR for this node's LAN URL (optional `?share=<token>` for a share link) |
+| `POST /api/share-link` | stage a file for a 15-minute browser download and return `{token,url}` (local-only) |
+| `GET /d/{token}` | browser-direct download of a staged share link |
+| `DELETE /api/share-link/{token}` | revoke a share link and delete its staged file (local-only) |
+| `POST/GET /api/ui/shared-inbox` | queue / drain Android share-sheet paths and text (local-only) |
 | `POST /api/ui/selection` | publish the devices the local UI has selected (used by desktop drops) |
 | `POST /api/quit` · `POST /api/window/focus` | local-only desktop helpers (retire an older build, raise the window) |
 | `GET /api/metrics` | transfers started/finished/failed and bytes sent/received |
-| `GET/POST /api/settings` | read / update settings |
+| `GET/POST /api/settings` | read / update settings, including `trusted_peers` and `auto_accept_trusted_only` |
 
 ### Wire protocol (device ↔ device)
 
 ```
-POST /api/v1/offer                    {sender_id, sender_name, filename, size, sha256?, note?}
-GET  /api/v1/offer/{id}               {status: pending|accepted|rejected, upload_url?, upload_token?}
-POST /api/v1/upload/{id}              body: raw file bytes, header X-LanDrop-Upload-Token
+POST /api/v1/offer       {sender_id, sender_name, filename, size, sha256?, note?,
+                          rel_path?, batch_id?, batch_name?, text?}
+GET  /api/v1/offer/{id}  {status: pending|accepted|rejected|completed,
+                          upload_url?, upload_token?}
+HEAD /api/v1/upload/{id} header X-LanDrop-Upload-Token
+                         -> 200, X-LanDrop-Offset: <bytes already on disk>
+POST /api/v1/upload/{id} header X-LanDrop-Upload-Token,
+                         optional X-LanDrop-Offset: <resume position>
+                         body: raw file bytes
 ```
 
-Offers time out after 120 s. The one-time upload token is generated on accept and
-never persisted.
+Offers time out after 120 s. The upload token is generated on accept and never
+persisted. It stays valid while the transfer is `Accepted` or `Transferring` so
+a resume can authenticate, and is burned on completion, cancellation, rejection,
+oversized bodies and SHA-256 mismatches. A resumed `POST` must use exactly the
+offset `HEAD` reported (the receiver re-hashes the existing prefix); a mismatch
+is `409`, as is a second concurrent stream for the same transfer. A read error
+mid-stream keeps `.{filename}.part-{id}` on disk and leaves the transfer
+`Transferring`, so the sender can retry (three times, 500/1500/3000 ms backoff)
+from the reported offset. A transfer with no progress for ten minutes is failed
+and its partial file removed.
+
+Each offer also carries a **verification PIN**: the first four bytes of
+`SHA-256("{sender_id}:{receiver_id}:{key}")` (big-endian, modulo 1,000,000),
+formatted `NNN-NNN`. `key` is the batch id when present, else
+`"{filename}:{size}"`.
+
+A batch is still one offer per file, all sharing `batch_id`; the receiver groups
+them into a single prompt and can accept/reject/cancel the whole set with
+`POST /api/batches/{id}/accept|reject|cancel`. Uploads flow through a four-slot
+semaphore on the sender, so a large folder queues instead of opening one
+connection per file. Text snippets (`text` set) complete on accept and never
+upload a body.
 
 </details>
 
 ## Known limitations
 
-- No pause/resume; an interrupted transfer must be re-sent.
-- A transfer with no progress for 10 minutes is failed automatically.
-- Transfer history is in-memory only (lost on restart; terminal entries are
-  dropped after an hour).
+- A dropped connection resumes automatically (up to three retries from the
+  receiver's reported offset); there is no manual pause/resume button.
+- A transfer with no progress for 10 minutes is failed automatically and its
+  partial file is removed.
+- Transfer history is in-memory only (lost on restart). Terminal entries are
+  dropped after an hour, and **Clear history** removes them on demand without
+  touching saved files.
 - Settings and "open download folder" are only available from the machine running
   LanDrop (sending, accepting and rejecting work from any LAN device).
 - Choosing a per-transfer save folder (and the folder browser) is likewise
   machine-local; accepts from other devices use the configured folder.
 - mDNS on some networks (client isolation, VPNs) is unreliable — manual peers
   cover this.
-- One transfer per file per device: 32 files × 2 devices is 64 transfers (the
-  per-batch cap is 32 files), and the receiver sees one offer per file unless they
-  use **Accept all**.
+- One transfer per file per device (up to 32 target devices per request), and the
+  receiver sees one offer per file unless they use **Accept all** or the batch
+  endpoints.
 - Folder sends recreate directories but not empty ones, and symlinks inside a
   dropped folder are skipped.
 - One batch carries up to 500 files; their uploads stream four at a time, so a
@@ -587,10 +664,10 @@ never persisted.
 
 ## Roadmap / next steps
 
-- QR code of `http://<ip>:<port>` for phone onboarding
-- Transfer history persisted to disk (JSON/SQLite)
-- True resumable transfers (an interrupted send starts over today)
+- Transfer history persisted to disk (JSON/SQLite), so Clear history and restart
+  keep a durable record
 - Android foreground service, so receiving survives backgrounding
+- Android SAF folder picker (scoped storage currently limits the in-app picker)
 - systemd user unit
 
 ## License

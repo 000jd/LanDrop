@@ -94,6 +94,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/peers/manual", post(handlers::api_add_manual_peer))
         .route("/api/peers/trust", post(handlers::api_trust_peer))
         .route("/api/transfers", get(handlers::api_transfers))
+        .route("/api/transfers/clear", post(handlers::api_clear_transfers))
         // Streaming uploads opt out of the small global body limit.
         .route(
             "/api/send",

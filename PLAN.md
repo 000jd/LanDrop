@@ -523,3 +523,62 @@ Two items came out of the review conversation itself:
   endpoints are local-only (`403` otherwise). `NodeOptions::allow_second_instance`
   remains for the case where a node must start next to a foreign one, but the
   desktop path no longer uses it by default.
+
+## Stage 2: resumable uploads, verification, share sheet (implemented)
+
+Delivered as three commits on top of `28547a2`, each green on tests, clippy,
+fmt and the cross-target/MSRV checks.
+
+### Resumable uploads (`e5a48f1`)
+
+- The receiver writes a deterministic `.{filename}.part-{id}` file inside the
+  destination directory and tracks `part_path` + `uploading` on `Transfer`.
+- `HEAD /api/v1/upload/{id}` verifies the upload token without consuming it and
+  returns `X-LanDrop-Offset: <bytes on disk>`.
+- `POST /api/v1/upload/{id}` accepts `X-LanDrop-Offset`; the existing prefix is
+  re-fed into SHA-256 in 64 KiB chunks and the file is opened in append mode, so
+  the final checksum still covers the whole file.
+- The upload token stays valid while `Accepted` or `Transferring`, then is burned
+  on completion, cancellation, rejection, oversized bodies and checksum
+  mismatches. A second concurrent stream is `409`; `expire_stale()` and
+  `cancel()` remove partial files.
+- The sender retries network/non-4xx failures three times (500/1500/3000 ms),
+  asks `HEAD` for the offset and uploads only the remainder.
+- Covered by `integration::interrupted_upload_resumes_from_the_reported_offset`.
+
+### Verification PINs and trusted peers (`9b46f02`)
+
+- `protocol::transfer_pin` derives `NNN-NNN` from
+  `sender:receiver:batch-or-filename:size`; `TransferView.pin` is shown on
+  transfer/batch cards and in desktop prompts.
+- `Config` gains `auto_accept_trusted_only` and `trusted_peers`, exposed through
+  `GET/POST /api/settings`; `POST /api/peers/trust` toggles a device
+  (machine-local, persisted) and `GET /api/peers` returns `trusted`.
+- `handle_offer` auto-accepts for trusted senders when the mode is enabled; the
+  UI adds the trusted-only checkbox and a trust/trusted pill per peer card.
+- Covered by `integration::trusted_peers_auto_accept_and_expose_pins` and
+  `protocol::tests::transfer_pin_is_deterministic_and_padded`.
+
+### Android multicast lock and share sheet (`6b83f19`)
+
+- Manifest: `CHANGE_WIFI_MULTICAST_STATE`, plus `ACTION_SEND` and
+  `ACTION_SEND_MULTIPLE` filters (`*/*`).
+- `MainActivity` acquires a non-reference-counted `MulticastLock` in `onResume`
+  and releases it in `onPause`.
+- Shared `content://` streams are copied to `cacheDir/shared` using
+  `OpenableColumns.DISPLAY_NAME`, then posted with any `EXTRA_TEXT` to the
+  local-only `/api/ui/shared-inbox` queue once `instance.json` reports the port.
+  The UI drains the queue into `sharedPaths` / the snippet box and sends paths
+  through the existing `/api/send-path`.
+
+### Final layout, history and docs (this round)
+
+- Settings: the download-folder field spans the grid, the four checkboxes form a
+  2×2, card/form spacing is slightly tighter, and the Tauri window grows from
+  700 to 760 px so all three tabs fit without vertical scrolling.
+- `POST /api/transfers/clear` removes terminal history (machine-local), leaving
+  active/waiting transfers and saved files untouched; the Receive tab shows a
+  subtle **Clear history (N)** button.
+- README, this plan and `docs/security-tests.md` now cover snippets, QR/share
+  links, resume, PINs/trusted peers, batch endpoints and the four-slot upload
+  semaphore, the Android multicast lock and share sheet, and the history clear.

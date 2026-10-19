@@ -538,9 +538,9 @@ pub fn run() {
                 // rejected it and a clear panic beats a window without a mark.
                 .icon(window_icon())
                 .expect("embedded window icon")
-                // 700 tall so the Send view (snippet row included) fits without
-                // a scrollbar when the transfer list is empty.
-                .inner_size(960.0, 700.0)
+                // 760 tall so every tab — Settings with both cards included —
+                // fits without a scrollbar.
+                .inner_size(960.0, 760.0)
                 .min_inner_size(720.0, 520.0)
                 .center()
                 .visible(!wants_hidden());

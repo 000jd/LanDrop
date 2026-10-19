@@ -256,6 +256,25 @@ async function acceptAllIncoming() {
   await loadTransfers();
 }
 
+/// Forget completed/failed/cancelled/rejected rows (files are never deleted).
+async function clearHistory() {
+  const btn = $("clearHistoryBtn");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api("/api/transfers/clear", { method: "POST" });
+    const n = (res && res.cleared) || 0;
+    toast(
+      n ? `Cleared ${n} finished transfer${n === 1 ? "" : "s"}` : "Nothing to clear",
+      n ? "success" : "info"
+    );
+    await loadTransfers();
+  } catch (e) {
+    toast("Clear failed: " + e.message, "error");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 /// Show the "Accept all" button only for real batches (two or more files).
 function updateAcceptAll() {
   let btn = $("acceptAllBtn");
@@ -479,6 +498,15 @@ function renderStats() {
       ["preparing", "waiting", "accepted", "transferring"].includes(t.status)
   ).length;
   $("outgoingHint").textContent = outgoingActive ? `${outgoingActive} active` : "idle";
+
+  const terminal = state.transfers.filter((t) =>
+    ["completed", "failed", "cancelled", "rejected"].includes(t.status)
+  ).length;
+  const clearBtn = $("clearHistoryBtn");
+  if (clearBtn) {
+    clearBtn.hidden = terminal === 0;
+    clearBtn.textContent = terminal ? `Clear history (${terminal})` : "Clear history";
+  }
 }
 
 // Always-visible receive progress, so the Receive tab is optional.
@@ -1389,6 +1417,7 @@ function connectEvents() {
   es.addEventListener("transfer_updated", refreshTransfers);
   es.addEventListener("transfer_completed", (e) => { refreshTransfers(); notifyComplete(e.data); });
   es.addEventListener("transfer_failed", refreshTransfers);
+  es.addEventListener("transfers_cleared", refreshTransfers);
   // The server tells us when we missed events (lagged subscriber).
   es.addEventListener("resync", () => { loadPeers(); loadTransfers(); pollSharedInbox(); });
   es.onopen = () => {
@@ -1482,6 +1511,7 @@ function init() {
   $("addManualBtn").onclick = addManualPeer;
   $("manualAddr").oninput = updateSendTargetLabel;
   $("saveSettingsBtn").onclick = saveSettings;
+  $("clearHistoryBtn").onclick = clearHistory;
   $("openFolderBtn").onclick = openFolder;
   $("copyUrlBtn").onclick = copyLanUrl;
 

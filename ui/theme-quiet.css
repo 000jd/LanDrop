@@ -92,7 +92,7 @@ body {
 
 body {
   min-height: 100vh;
-  padding: 26px 22px;
+  padding: 18px 22px;
   background: var(--page);
   color: var(--ink);
   font: 400 13.5px/1.5 var(--font);
@@ -121,10 +121,10 @@ a {
 .shell {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
   max-width: 980px;
   margin: 0 auto;
-  padding: 20px;
+  padding: 16px;
   border: var(--outline) solid var(--line);
   border-radius: 18px;
   background: var(--surface);
@@ -341,8 +341,8 @@ html[data-theme="dark"] .icon-moon {
 .card {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 16px;
+  gap: 10px;
+  padding: 13px 16px;
   border: var(--outline) solid var(--line);
   border-radius: var(--r-card);
   background: var(--card);
@@ -353,6 +353,13 @@ html[data-theme="dark"] .icon-moon {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+.card-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
 }
 
 .card-head h2 {
@@ -692,12 +699,17 @@ select:focus {
 .form-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 16px 20px;
+  gap: 10px 20px;
+}
+
+/* The folder path gets the full row; the four checkboxes then form a 2×2. */
+.form-grid label.wide {
+  grid-column: 1 / -1;
 }
 
 .form-grid label {
   display: block;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   color: var(--ink-2);
   font-size: 12.5px;
   font-style: italic;
@@ -777,7 +789,7 @@ select:focus {
   color: var(--ink-3);
   font-size: 12px;
   font-style: italic;
-  line-height: 1.6;
+  line-height: 1.45;
 }
 
 /* Text / link snippets */

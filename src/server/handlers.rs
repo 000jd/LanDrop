@@ -313,6 +313,24 @@ pub async fn api_transfers(State(state): State<AppState>) -> Response {
     Json(state.transfers.list().await).into_response()
 }
 
+/// Clear completed/failed/cancelled/rejected transfers from the history.
+///
+/// Machine-local: this only forgets records in this node's memory; files that
+/// were already saved are never touched.
+pub async fn api_clear_transfers(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Response {
+    if !is_local_peer(&addr) {
+        return err(
+            StatusCode::FORBIDDEN,
+            "clearing history is only available from this machine",
+        );
+    }
+    let cleared = state.transfers.clear_terminal().await;
+    Json(json!({ "ok": true, "cleared": cleared })).into_response()
+}
+
 /// Receive a file from the local UI and start an outgoing transfer.
 ///
 /// Accessible from any device on the LAN (so a phone can open the UI and

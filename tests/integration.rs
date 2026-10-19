@@ -2146,3 +2146,58 @@ async fn shared_inbox_queues_files_and_text_for_the_ui() {
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
 }
+
+#[tokio::test]
+async fn clear_history_keeps_active_transfers_and_saved_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, port, _) = instance("bob", dir.path().join("dl")).await;
+    let base = format!("http://127.0.0.1:{port}");
+    let client = reqwest::Client::new();
+
+    // One completed transfer, with a real file on disk.
+    let done = offer_accepted(&base, &state, "done.txt", 2, None).await;
+    let token = upload_token(&state, &done).await;
+    let resp = client
+        .post(format!("{base}/api/v1/upload/{done}"))
+        .header(UPLOAD_TOKEN_HEADER, token)
+        .body("ok")
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let done = wait_for_status(&state, &done, "completed").await;
+    let saved = done
+        .saved_path
+        .expect("completed transfer has a saved path");
+
+    // One cancelled transfer is terminal too.
+    let cancelled = offer_accepted(&base, &state, "cancel.bin", 5, None).await;
+    assert!(state.transfers.cancel(&cancelled).await);
+
+    // A waiting offer must survive the cleanup.
+    let waiting = offer_from(&base, "stranger", "later.bin", 5).await;
+
+    let resp = client
+        .post(format!("{base}/api/transfers/clear"))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["cleared"], 2);
+
+    let list: Vec<serde_json::Value> = client
+        .get(format!("{base}/api/transfers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list.len(), 1, "only the waiting offer remains: {list:?}");
+    assert_eq!(list[0]["id"], waiting);
+    assert_eq!(list[0]["status"], "waiting");
+
+    // Clearing history never deletes files that were already received.
+    assert!(std::path::Path::new(&saved).exists());
+}
