@@ -1176,8 +1176,13 @@ a.btn {
 }
 
 /* QR dialog + share link */
+#qrDialog {
+  width: min(420px, calc(100vw - 40px));
+  max-width: min(420px, calc(100vw - 40px));
+}
+
 .qr-form {
-  width: min(460px, 100%);
+  width: 100%;
 }
 
 .qr-wrap {
@@ -1192,6 +1197,8 @@ a.btn {
 #qrImage {
   width: 240px;
   height: 240px;
+  border-radius: 10px;
+  background: #fff;
   image-rendering: pixelated;
 }
 
