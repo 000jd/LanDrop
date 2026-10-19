@@ -12,6 +12,9 @@
    -------------------------------------------------------------------------- */
 
 :root {
+  /* Native controls (number spinner) follow the light theme by default. */
+  color-scheme: light;
+
   --page: #ededed;
   --surface: #f3f3f3;
   --card: #f8f8f8;
@@ -45,6 +48,8 @@
 }
 
 html[data-theme="dark"] {
+  color-scheme: dark;
+
   --page: #121212;
   --surface: #191919;
   --card: #1f1f1f;
@@ -355,6 +360,11 @@ html[data-theme="dark"] .icon-moon {
   font-size: 15px;
   font-weight: 550;
   letter-spacing: -0.01em;
+}
+
+/* Hints with no text must not leave an empty bordered pill behind. */
+.card-head .muted:empty {
+  display: none;
 }
 
 .card-head .muted {
@@ -691,10 +701,14 @@ select:focus {
   flex: 1;
 }
 
+/* `.form-grid label { display: block }` would beat plain `.check`, stripping the
+   inline layout and the gap between box and text. */
+.form-grid label.check,
 .check {
   display: inline-flex;
   align-items: center;
   gap: 9px;
+  margin-bottom: 0;
   color: var(--ink);
   font-size: 12.5px;
   cursor: pointer;
