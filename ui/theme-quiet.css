@@ -658,11 +658,32 @@ select:focus {
 
 .input-row,
 .manual-row,
-.save-row,
-.send-row {
+.save-row {
   display: flex;
   align-items: flex-end;
   gap: 10px;
+}
+
+.send-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.send-row > strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.send-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
 }
 
 .manual-row input,

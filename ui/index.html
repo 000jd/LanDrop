@@ -89,10 +89,16 @@
             <h2>Send</h2>
             <span class="muted sm" id="outgoingHint">idle</span>
           </div>
+          <div class="text-send">
+            <textarea id="textToSend" rows="2" placeholder="…or paste a link / some text to send"></textarea>
+            <button class="btn ghost sm" id="sendTextBtn" type="button">Send text</button>
+          </div>
           <div class="send-row">
-            <button class="btn ghost sm" id="showQrBtn" type="button">QR code</button>
             <strong id="sendTargetLabel">No device selected</strong>
-            <button class="btn dark" id="sendBtn" type="button" disabled>Send</button>
+            <span class="send-actions">
+              <button class="btn ghost sm" id="showQrBtn" type="button">QR code</button>
+              <button class="btn dark" id="sendBtn" type="button" disabled>Send</button>
+            </span>
           </div>
           <div id="outgoingList" class="transfer-list"></div>
         </div>
