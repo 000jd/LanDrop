@@ -327,7 +327,13 @@ function updateSendTargetLabel() {
   if (peers.length === 1) label = `${peers[0].name} (${peers[0].addr}:${peers[0].port})`;
   else if (peers.length > 1) label = `${peers.length} devices`;
   $("sendTargetLabel").textContent = label ? "→ " + label : "No device selected";
-  $("sendBtn").disabled = !(state.selectedFiles.length > 0 && (peers.length > 0 || manual));
+  const hasTarget = peers.length > 0 || Boolean(manual);
+  $("sendBtn").disabled = !(state.selectedFiles.length > 0 && hasTarget);
+  // The snippet button follows the same rule, plus "there is text to send".
+  const textToSend = $("textToSend");
+  if (textToSend) {
+    $("sendTextBtn").disabled = !(textToSend.value.trim() && hasTarget);
+  }
 }
 
 /// Every selected device (address form), or the manual address as a fallback.
@@ -796,6 +802,7 @@ async function sendText() {
     toast("Send failed: " + e.message, "error");
   } finally {
     btn.disabled = false;
+    updateSendTargetLabel();
   }
 }
 
@@ -1324,6 +1331,14 @@ function init() {
   };
   $("sendBtn").onclick = sendFiles;
   $("sendTextBtn").onclick = sendText;
+  $("textToSend").oninput = updateSendTargetLabel;
+  $("textToSend").onkeydown = (e) => {
+    // Ctrl+Enter / Cmd+Enter sends the snippet, like any chat box.
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      if (!$("sendTextBtn").disabled) sendText();
+    }
+  };
   $("showQrBtn").onclick = () => showQr(null);
   $("settingsQrBtn").onclick = () => showQr(null);
   $("shareLinkBtn").onclick = shareSelectedFile;
@@ -1361,6 +1376,7 @@ function init() {
     else if (reject) rejectTransfer(reject.dataset.reject);
   });
 
+  updateSendTargetLabel();
   loadInfo();
   loadPeers();
   loadTransfers();
