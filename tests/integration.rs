@@ -512,6 +512,103 @@ async fn a_batch_is_one_decision_for_every_file() {
 }
 
 #[tokio::test]
+async fn one_upload_reaches_every_selected_device() {
+    // One multipart request carries both targets: the node stages and hashes the
+    // file once, then queues a transfer per device.
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+    let dir_s = tempfile::tempdir().unwrap();
+    let (state_a, port_a, _) = instance("alice", dir_a.path().join("dl")).await;
+    let (state_b, port_b, _) = instance("bob", dir_b.path().join("dl")).await;
+    let (_state_s, port_s, _) = instance("sender", dir_s.path().join("dl")).await;
+    *state_a.transfers.auto_accept.write().await = true;
+    *state_b.transfers.auto_accept.write().await = true;
+
+    let payload = b"one upload, two devices".to_vec();
+    let tmp = dir_s.path().join("payload.bin");
+    std::fs::write(&tmp, &payload).unwrap();
+    let part = reqwest::multipart::Part::file(&tmp)
+        .await
+        .unwrap()
+        .file_name("payload.bin");
+    let form = reqwest::multipart::Form::new()
+        .text("target", format!("127.0.0.1:{port_a}"))
+        .text("target", format!("127.0.0.1:{port_b}"))
+        .part("file", part);
+    let resp = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{port_s}/api/send"))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "send rejected: {resp:?}");
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["transfer_ids"].as_array().unwrap().len(), 2, "{body}");
+
+    for (dir, state) in [(&dir_a, &state_a), (&dir_b, &state_b)] {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let done = state
+                .transfers
+                .list()
+                .await
+                .iter()
+                .any(|t| t.status == "completed");
+            if done {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "file did not arrive in time"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+        assert_eq!(
+            std::fs::read(dir.path().join("dl/payload.bin")).unwrap(),
+            payload
+        );
+    }
+}
+
+#[tokio::test]
+async fn batch_accept_releases_every_member_in_one_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, port, _) = instance("bob", dir.path().join("dl")).await;
+    let base = format!("http://127.0.0.1:{port}");
+    let client = reqwest::Client::new();
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        let resp = client
+            .post(format!("{base}/api/v1/offer"))
+            .json(&serde_json::json!({
+                "sender_id": "tester",
+                "sender_name": "tester",
+                "filename": name,
+                "size": 3,
+                "sha256": null,
+                "note": "",
+                "batch_id": "batch-9",
+                "batch_name": "folder",
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success());
+    }
+    assert_eq!(state.transfers.waiting_in_batch("batch-9").await.len(), 3);
+
+    // One request accepts the whole folder.
+    let resp = client
+        .post(format!("{base}/api/batches/batch-9/accept"))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "batch accept failed: {resp:?}");
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["accepted"], 3, "{body}");
+    assert!(state.transfers.waiting_in_batch("batch-9").await.is_empty());
+}
+
+#[tokio::test]
 async fn metrics_endpoint_reports_counters() {
     let dir = tempfile::tempdir().unwrap();
     let (_, port, _) = instance("dave", dir.path().join("dl")).await;

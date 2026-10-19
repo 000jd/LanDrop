@@ -20,32 +20,81 @@ pub fn spawn_detached(cmd: &mut Command) -> io::Result<()> {
 /// factors overflow `u64` in theory, and a saturated number is a much better
 /// answer than a wrapped one when we use it as a "is there room?" guard.
 #[cfg(unix)]
+#[allow(clippy::unnecessary_cast)] // u64 on Linux, u32 on macOS and BSD
 pub fn free_space(path: &Path) -> u64 {
     nix::sys::statvfs::statvfs(path)
-        .map(|s| s.blocks_available().saturating_mul(s.fragment_size()))
+        .map(|s| (s.blocks_available() as u64).saturating_mul(s.fragment_size() as u64))
         .unwrap_or(0)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub fn free_space(path: &Path) -> u64 {
+    disk_usage(path).map(|(free, _)| free).unwrap_or(0)
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn free_space(_path: &Path) -> u64 {
     0
 }
 
 /// `(free, total)` bytes of the filesystem containing `path` (None when unknown).
 #[cfg(unix)]
+#[allow(clippy::unnecessary_cast)] // u64 on Linux, u32 on macOS and BSD
 pub fn disk_usage(path: &Path) -> Option<(u64, u64)> {
     nix::sys::statvfs::statvfs(path).ok().map(|s| {
-        let unit = s.fragment_size();
+        let unit = s.fragment_size() as u64;
         (
-            s.blocks_available().saturating_mul(unit),
-            s.blocks().saturating_mul(unit),
+            (s.blocks_available() as u64).saturating_mul(unit),
+            (s.blocks() as u64).saturating_mul(unit),
         )
     })
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub fn disk_usage(path: &Path) -> Option<(u64, u64)> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    wide.push(0);
+    let (mut free, mut total, mut total_free) = (0u64, 0u64, 0u64);
+    // SAFETY: `wide` is NUL-terminated and outlives the call; the out pointers
+    // are valid for the duration of the call.
+    let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, &mut total, &mut total_free) };
+    (ok != 0).then_some((free, total))
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn disk_usage(_path: &Path) -> Option<(u64, u64)> {
     None
+}
+
+/// Open a file, folder or URL with the platform's default handler (shared by the
+/// local API, the desktop wrapper and the CLI).
+pub fn open_target(target: &str) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut cmd = Command::new("xdg-open");
+        cmd.arg(target);
+        spawn_detached(&mut cmd)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = Command::new("open");
+        cmd.arg(target);
+        spawn_detached(&mut cmd)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/c", "start", "", target]);
+        spawn_detached(&mut cmd)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        let _ = target;
+        Ok(())
+    }
 }
 
 /// Compact human size: `812 B`, `1.9 MB`, `2.4 GB`.

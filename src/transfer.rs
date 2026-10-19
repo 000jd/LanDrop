@@ -136,8 +136,8 @@ pub struct Transfer {
     pub batch_name: Option<String>,
     /// Bytes streamed so far (for speed / ETA).
     pub bytes_done: u64,
-    /// Unix seconds when streaming started.
-    pub started_at: Option<i64>,
+    /// When streaming started (monotonic, for smooth speed/ETA).
+    pub started_at: Option<std::time::Instant>,
     /// Per-transfer save directory (incoming, chosen by the user).
     pub save_dir: Option<PathBuf>,
     /// One-time upload token (incoming, accepted).
@@ -236,7 +236,7 @@ impl Transfer {
     /// Bytes done, average speed (bytes/second) and estimated seconds left.
     pub fn progress_stats(&self) -> (u64, f64, Option<u64>) {
         let elapsed = match self.started_at {
-            Some(start) => (now_secs() - start).max(0) as f64,
+            Some(start) => start.elapsed().as_secs_f64().max(0.001),
             None => 0.0,
         };
         let speed = if elapsed > 0.0 && self.bytes_done > 0 {
@@ -272,6 +272,12 @@ pub struct TransferManager {
     pub interactive_prompts: Arc<AtomicBool>,
     /// Process-wide counters (see [`crate::metrics`]).
     pub metrics: Arc<crate::metrics::Metrics>,
+    /// Batches whose prompt task is already running: a 50-file folder must ask
+    /// once, not fire 50 dialogs when its offers settle together.
+    pub batch_prompts: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Upload slots, so a large folder streams in a bounded queue instead of
+    /// opening one parallel upload per file.
+    pub upload_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl TransferManager {
@@ -289,6 +295,8 @@ impl TransferManager {
             peers,
             interactive_prompts: Arc::new(AtomicBool::new(false)),
             metrics: Arc::new(crate::metrics::Metrics::new()),
+            batch_prompts: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            upload_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_UPLOADS)),
         }
     }
 
@@ -474,14 +482,20 @@ impl TransferManager {
             match view.batch_id.clone() {
                 // A folder or multi-file selection: one question for the batch,
                 // asked once the batch stops growing (see `notify::prompt_batch`).
-                Some(batch_id) => crate::notify::prompt_batch(
-                    self.clone(),
-                    batch_id,
-                    view.batch_name
-                        .clone()
-                        .unwrap_or_else(|| "files".to_string()),
-                    view.peer_name.clone(),
-                ),
+                Some(batch_id) => {
+                    // One task per batch: the first offer schedules the prompt,
+                    // the rest just join the batch.
+                    if self.begin_batch_prompt(&batch_id) {
+                        crate::notify::prompt_batch(
+                            self.clone(),
+                            batch_id,
+                            view.batch_name
+                                .clone()
+                                .unwrap_or_else(|| "files".to_string()),
+                            view.peer_name.clone(),
+                        );
+                    }
+                }
                 None => crate::notify::prompt_incoming(
                     self.clone(),
                     id.clone(),
@@ -491,6 +505,21 @@ impl TransferManager {
             }
         }
         Ok(id)
+    }
+
+    /// True the first time a prompt is scheduled for `batch_id`.
+    pub fn begin_batch_prompt(&self, batch_id: &str) -> bool {
+        self.batch_prompts
+            .lock()
+            .map(|mut set| set.insert(batch_id.to_string()))
+            .unwrap_or(false)
+    }
+
+    /// Forget a batch's prompt once its decision has been made (or it gave up).
+    pub fn end_batch_prompt(&self, batch_id: &str) {
+        if let Ok(mut set) = self.batch_prompts.lock() {
+            set.remove(batch_id);
+        }
     }
 
     /// Ids of the incoming transfers that are still waiting and belong to
@@ -614,6 +643,10 @@ impl TransferManager {
     }
 }
 
+/// How many uploads may stream at the same time. Offers are registered for a
+/// whole folder immediately; the data then flows through this many slots.
+const MAX_CONCURRENT_UPLOADS: usize = 4;
+
 /// Comparison without early exit, so token checks do not leak timing.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
@@ -661,6 +694,37 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn batch_prompts_are_scheduled_once() {
+        let mgr = TransferManager::new(std::sync::Arc::new(crate::peers::PeerStore::new()));
+        assert!(
+            mgr.begin_batch_prompt("b1"),
+            "the first offer schedules the prompt"
+        );
+        assert!(
+            !mgr.begin_batch_prompt("b1"),
+            "later files of the batch must not prompt again"
+        );
+        mgr.end_batch_prompt("b1");
+        assert!(
+            mgr.begin_batch_prompt("b1"),
+            "a finished prompt frees the id again"
+        );
+    }
+
+    #[test]
+    fn speed_is_nonzero_for_sub_second_transfers() {
+        let mut t = Transfer::new_outgoing(&peer(), &offer(1_000));
+        t.status = Status::Transferring;
+        t.bytes_done = 500;
+        t.started_at = Some(std::time::Instant::now() - std::time::Duration::from_millis(50));
+        let (_, speed, _) = t.progress_stats();
+        assert!(
+            speed > 0.0,
+            "a 50 ms transfer must report a real speed, got {speed}"
+        );
+    }
+
     #[test]
     fn progress_stats_are_empty_before_streaming() {
         let t = Transfer::new_outgoing(&peer(), &offer(1_000));
@@ -675,7 +739,7 @@ mod tests {
         let mut t = Transfer::new_outgoing(&peer(), &offer(1_000_000));
         t.status = Status::Transferring;
         t.bytes_done = 250_000;
-        t.started_at = Some(now_secs() - 5);
+        t.started_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(5));
         let (done, speed, eta) = t.progress_stats();
         assert_eq!(done, 250_000);
         // ~50 KB/s over 5 s; 750 KB left → ~15 s (allow scheduling slack).
@@ -689,7 +753,7 @@ mod tests {
         let mut t = Transfer::new_outgoing(&peer(), &offer(1_000));
         t.status = Status::Completed;
         t.bytes_done = 1_000;
-        t.started_at = Some(now_secs() - 2);
+        t.started_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(2));
         let (_, _, eta) = t.progress_stats();
         assert_eq!(eta, None);
     }

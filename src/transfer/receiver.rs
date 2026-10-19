@@ -89,7 +89,7 @@ where
         t.status = Status::Transferring;
         t.progress = 0.0;
         t.bytes_done = 0;
-        t.started_at = Some(now_secs());
+        t.started_at = Some(std::time::Instant::now());
         t.updated_at = now_secs();
     })
     .await;
@@ -99,7 +99,7 @@ where
     let notify_on = mgr
         .interactive_prompts
         .load(std::sync::atomic::Ordering::Relaxed);
-    let started = now_secs();
+    let started = std::time::Instant::now();
     if notify_on {
         crate::notify::progress(
             id,
@@ -178,7 +178,7 @@ where
                 }
                 if notify_on && last_notify.elapsed() >= NOTIFY_INTERVAL {
                     let pct = (p * 100.0).round().clamp(0.0, 100.0) as u8;
-                    let elapsed = (now_secs() - started).max(1) as f64;
+                    let elapsed = started.elapsed().as_secs_f64().max(0.001);
                     let speed = done as f64 / elapsed;
                     let eta = if speed > 0.0 && expected_size > done {
                         Some(((expected_size - done) as f64 / speed).ceil() as u64)

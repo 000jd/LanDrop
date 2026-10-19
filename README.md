@@ -536,13 +536,18 @@ landrop/
 | `GET /api/peers` | discovered + manual peers |
 | `POST /api/peers/manual` | add a manual peer (`{"address":"ip:port"}`) |
 | `GET /api/transfers` | all transfers |
-| `POST /api/send` | start a send (multipart: `target`, `file`) |
+| `POST /api/send` | start a send (multipart: repeat `target` for several devices, `file`, optional `rel_path`, `batch_id`, `batch_name`) |
+| `POST /api/send-path` | send local files/folders by path (desktop drop; walks folders, local-only) |
 | `POST /api/transfers/{id}/cancel` | cancel |
 | `POST /api/transfers/{id}/accept` | accept incoming (optional `{"save_dir": "/path"}`) |
 | `POST /api/transfers/{id}/reject` | reject incoming |
 | `GET /api/fs/list?path=…` | browse subfolders (folder picker) |
 | `POST /api/fs/mkdir` | create a folder from the picker |
 | `GET /api/events` | SSE stream (`peer_updated`, `transfer_updated`, …) |
+| `POST /api/batches/{id}/accept` · `/reject` | accept or reject a whole folder/batch in one request |
+| `POST /api/ui/selection` | publish the devices the local UI has selected (used by desktop drops) |
+| `POST /api/quit` · `POST /api/window/focus` | local-only desktop helpers (retire an older build, raise the window) |
+| `GET /api/metrics` | transfers started/finished/failed and bytes sent/received |
 | `GET/POST /api/settings` | read / update settings |
 
 ### Wire protocol (device ↔ device)
@@ -575,6 +580,8 @@ never persisted.
   use **Accept all**.
 - Folder sends recreate directories but not empty ones, and symlinks inside a
   dropped folder are skipped.
+- One batch carries up to 500 files; their uploads stream four at a time, so a
+  big folder queues instead of saturating the link.
 - The Tauri wrapper is Linux-first (works on Windows/macOS with the standard
   Tauri deps, but is only tested on Linux).
 

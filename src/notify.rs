@@ -269,6 +269,7 @@ pub fn prompt_batch(mgr: TransferManager, batch_id: String, batch_name: String, 
             for _ in 0..240 {
                 let waiting = mgr.waiting_in_batch(&batch_id).await;
                 if waiting.is_empty() {
+                    mgr.end_batch_prompt(&batch_id);
                     return;
                 }
                 if waiting.len() == last {
@@ -285,6 +286,7 @@ pub fn prompt_batch(mgr: TransferManager, batch_id: String, batch_name: String, 
 
             let members = mgr.waiting_in_batch(&batch_id).await;
             if members.is_empty() {
+                mgr.end_batch_prompt(&batch_id);
                 return;
             }
             let (files, bytes) = mgr.batch_totals(&members).await;
@@ -294,12 +296,13 @@ pub fn prompt_batch(mgr: TransferManager, batch_id: String, batch_name: String, 
             );
             notify("LanDrop — incoming folder", &body);
 
-            let sender_c = sender.clone();
             let body_c = body.clone();
-            let decision = tokio::task::spawn_blocking(move || ask_user(&sender_c, &body_c))
+            let decision = tokio::task::spawn_blocking(move || ask_user(&body_c))
                 .await
                 .unwrap_or(Decision::Ignored);
             tracing::info!("batch {batch_id}: {files} files decided {decision:?}");
+            // A later batch with the same id may prompt again.
+            mgr.end_batch_prompt(&batch_id);
 
             match decision {
                 Decision::Accept => {
@@ -334,14 +337,11 @@ pub fn prompt_incoming(mgr: TransferManager, id: String, sender: String, filenam
     }
     #[cfg(target_os = "linux")]
     {
-        notify(
-            "LanDrop — incoming file",
-            &format!("{sender} wants to send you '{filename}'"),
-        );
+        let body = format!("{sender} wants to send you '{filename}'");
+        notify("LanDrop — incoming file", &body);
         tokio::spawn(async move {
-            let sender_c = sender.clone();
-            let filename_c = filename.clone();
-            let decision = tokio::task::spawn_blocking(move || ask_user(&sender_c, &filename_c))
+            let body_c = body.clone();
+            let decision = tokio::task::spawn_blocking(move || ask_user(&body_c))
                 .await
                 .unwrap_or(Decision::Ignored);
             tracing::info!(
@@ -374,15 +374,16 @@ pub fn prompt_incoming(mgr: TransferManager, id: String, sender: String, filenam
 }
 
 #[cfg(target_os = "linux")]
-fn ask_user(sender: &str, filename: &str) -> Decision {
-    let body = format!("{sender} wants to send you '{filename}'");
-    if let Some(d) = notify_send_actions(&body) {
+/// Ask the user with a finished message body; callers format it themselves, so a
+/// batch message is never wrapped twice.
+fn ask_user(body: &str) -> Decision {
+    if let Some(d) = notify_send_actions(body) {
         return d;
     }
-    if let Some(d) = zenity_question(&body) {
+    if let Some(d) = zenity_question(body) {
         return d;
     }
-    if let Some(d) = kdialog_yesno(&body) {
+    if let Some(d) = kdialog_yesno(body) {
         return d;
     }
     warn_missing_dialog_tool();

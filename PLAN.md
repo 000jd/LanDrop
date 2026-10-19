@@ -373,6 +373,38 @@ and tokens work), but the offers now carry a **batch**: an id plus a display nam
 7. Tests: batch fields, batch fan-out, and an end-to-end folder send where one
    acceptance releases every file and the tree is recreated.
 
+## Round 11: second review — verified, then fixed
+
+A second review (19 items) was checked line by line; **all were real**. Fixed:
+
+- one prompt per batch (in-flight guard in `TransferManager`), and the batch
+  message is no longer wrapped twice before reaching the dialog;
+- keyboard activation on a device card calls `togglePeer` again (the removed
+  `selectPeer` ReferenceError is gone);
+- `/api/send-path` walks/hashes/stages through `spawn_blocking`, so a huge drop
+  cannot stall a Tokio worker;
+- uploads are bounded by a 4-slot `Semaphore` (offers still register instantly);
+- `POST /api/batches/{id}/accept|reject` fan out server-side; the UI sends one
+  request per batch and the batch cap is aligned at 500;
+- `/api/send` accepts repeated `target` fields: one upload + one hash, then a
+  hard link per device (the UI posts once per file instead of once per device ×
+  file);
+- speed/ETA use `Instant` with a 1 ms floor (sub-second transfers report a real
+  rate);
+- cross-platform: `nix` is Unix-only, interfaces come from `if-addrs`, disk space
+  has a Windows path (`GetDiskFreeSpaceExW`), and `util::open_target` is shared by
+  the API, the desktop wrapper and the CLI. **Verified** with
+  `cargo check --target x86_64-pc-windows-gnu` and `aarch64-apple-darwin`;
+- Windows device names (CON/PRN/AUX/NUL/COM1-9/LPT1-9) are prefixed in
+  `sanitize_filename`;
+- `chrono`, axum's `ws` and tower-http's `cors` removed; `build.rs` honours
+  `SOURCE_DATE_EPOCH`;
+- the Android adaptive icon is real now (`mipmap-anydpi-v26` XMLs on a brand
+  colour plus the generated foreground; the template vectors are gone).
+
+Tests added: batch-prompt dedupe, sub-second speed, one upload → two devices,
+batch accept in one request, reserved-name sanitising.
+
 ## Round 9: folders, multi-device, desktop drops
 
 Requested: (a) folder drag & drop, (b) pick **several** devices and send to all of

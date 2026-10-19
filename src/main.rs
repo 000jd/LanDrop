@@ -195,27 +195,5 @@ async fn wait_for_signal() {
 
 /// Open the UI in the default browser (best-effort, reaped).
 fn open_browser(url: &str) -> std::io::Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        let mut cmd = std::process::Command::new("xdg-open");
-        cmd.arg(url);
-        landrop::util::spawn_detached(&mut cmd)
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let mut cmd = std::process::Command::new("open");
-        cmd.arg(url);
-        landrop::util::spawn_detached(&mut cmd)
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let mut cmd = std::process::Command::new("cmd");
-        cmd.args(["/c", "start", "", url]);
-        landrop::util::spawn_detached(&mut cmd)
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        let _ = url;
-        Ok(())
-    }
+    landrop::util::open_target(url)
 }

@@ -12,10 +12,16 @@ fn main() {
     // file changes. It is reported by /api/info and shown in Settings, so a
     // stale binary (or a stale running instance) is immediately visible
     // instead of looking like a UI that "did not update".
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    // Reproducible builds first: distro packagers set SOURCE_DATE_EPOCH.
+    let stamp = std::env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or_else(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        });
     println!("cargo:rustc-env=LANDROP_BUILD_ID={stamp}");
 
     // Keep the embedded UI logo in sync with the canonical SVG mark. Only

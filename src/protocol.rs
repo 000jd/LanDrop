@@ -63,6 +63,23 @@ pub fn sha256_file(path: &std::path::Path) -> std::io::Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+/// Windows device names that cannot exist as files (with or without an
+/// extension). A sender must never be able to hand us one.
+const WINDOWS_RESERVED: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+fn is_windows_reserved(name: &str) -> bool {
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_uppercase();
+    WINDOWS_RESERVED.contains(&stem.as_str())
+}
+
 /// How deep a sender-provided relative path may go.
 const MAX_REL_DEPTH: usize = 16;
 
@@ -181,6 +198,22 @@ pub fn truncate_chars(s: &str, max: usize) -> String {
 /// - cap the length (keeping the extension), drop trailing dots/spaces,
 /// - empty names get a placeholder.
 pub fn sanitize_filename(raw: &str) -> String {
+    // Run the pipeline to a fixed point (it converges in one step for almost
+    // everything). Sanitising an already-sanitised name then changes nothing —
+    // the fuzz target asserts exactly that, and the Windows-name prefix pushed a
+    // rare long input into a second step.
+    let mut current = raw.to_string();
+    for _ in 0..3 {
+        let next = sanitize_filename_once(&current);
+        if next == current {
+            break;
+        }
+        current = next;
+    }
+    current
+}
+
+fn sanitize_filename_once(raw: &str) -> String {
     // Take the last path component; also handle backslashes (Windows-style).
     let base = raw.replace('\\', "/");
     let name = base.rsplit('/').next().unwrap_or(raw);
@@ -198,6 +231,10 @@ pub fn sanitize_filename(raw: &str) -> String {
     let cleaned = cleaned.trim_end_matches(|c: char| c == '.' || c.is_whitespace());
     if cleaned.is_empty() {
         "unnamed-file".to_string()
+    } else if is_windows_reserved(cleaned) {
+        // Never hand a device name to a filesystem: Windows rejects these, and
+        // SMB shares on other systems can too.
+        format!("_{cleaned}")
     } else {
         cleaned.to_string()
     }
@@ -320,6 +357,18 @@ mod tests {
         // Hidden segments are dropped, depth is capped.
         assert_eq!(sanitize_rel_dirs(".hidden/keep"), Some(vec!["keep".into()]));
         assert!(sanitize_rel_dirs(&"a/".repeat(40)).unwrap().len() <= 16);
+    }
+
+    #[test]
+    fn sanitize_avoids_windows_device_names() {
+        assert_eq!(sanitize_filename("con.txt"), "_con.txt");
+        assert_eq!(sanitize_filename("NUL"), "_NUL");
+        assert_eq!(sanitize_filename("lpt9.tar.gz"), "_lpt9.tar.gz");
+        assert_eq!(sanitize_filename("Com1.log"), "_Com1.log");
+        // Anything else, including a name that merely contains one, is untouched.
+        assert_eq!(sanitize_filename("console.txt"), "console.txt");
+        assert_eq!(sanitize_filename("com10.txt"), "com10.txt");
+        assert_eq!(sanitize_filename("nul-notes.md"), "nul-notes.md");
     }
 
     #[test]

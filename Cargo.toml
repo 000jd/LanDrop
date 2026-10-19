@@ -20,10 +20,9 @@ build = "build.rs"
 
 [dependencies]
 anyhow = "1"
-axum = { version = "0.8", features = ["multipart", "ws"] }
+axum = { version = "0.8", features = ["multipart"] }
 dirs = "5"
 mdns-sd = "0.13"
-nix = { version = "0.29", features = ["net", "hostname", "fs"] }
 socket2 = { version = "0.5", features = ["all"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart"] }
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
@@ -36,11 +35,19 @@ tokio-util = { version = "0.7", features = ["io"] }
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["trace"] }
 uuid = { version = "1", features = ["v4"] }
-chrono = { version = "0.4", features = ["clock"] }
 futures-util = "0.3"
 bytes = "1"
+if-addrs = "0.13"
+
+# Unix-only helpers (interface addresses, disk space, instance lock). Everything
+# else builds natively on Windows and macOS too.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["net", "hostname", "fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -258,6 +258,10 @@ async fn run_send_inner(
     let poll_url = format!("{base}/api/v1/offer/{remote_id}");
     let (upload_url, upload_token) =
         wait_for_acceptance(&client, &poll_url, &shared, &mut cancel_rx).await?;
+
+    // Bounded streaming: a 500-file folder registers its offers immediately but
+    // uploads through a few slots, so it cannot saturate the link or time out.
+    let _upload_slot = mgr.upload_slots.acquire().await.ok();
     if *cancel_rx.borrow() {
         bail!("cancelled by user");
     }
@@ -273,7 +277,7 @@ async fn run_send_inner(
             t.status = Status::Transferring;
             t.progress = 0.0;
             t.bytes_done = 0;
-            t.started_at = Some(now_secs());
+            t.started_at = Some(std::time::Instant::now());
             t.updated_at = now_secs();
         }
     })

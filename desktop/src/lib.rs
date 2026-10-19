@@ -368,18 +368,7 @@ fn node_snapshot(app: &tauri::AppHandle) -> Option<RunningNode> {
 
 #[cfg(desktop)]
 fn open_dir(dir: &str) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    {
-        let mut cmd = std::process::Command::new("xdg-open");
-        cmd.arg(dir);
-        landrop::util::spawn_detached(&mut cmd).map_err(|e| format!("failed to open {dir}: {e}"))
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        Err(format!(
-            "opening folders is not implemented on this platform ({dir})"
-        ))
-    }
+    landrop::util::open_target(dir).map_err(|e| format!("failed to open {dir}: {e}"))
 }
 
 /// Open the download folder with the system file manager. Uses the node's live

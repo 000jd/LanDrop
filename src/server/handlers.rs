@@ -257,7 +257,7 @@ pub async fn api_send(
     ConnectInfo(request_addr): ConnectInfo<SocketAddr>,
     mut multipart: Multipart,
 ) -> Response {
-    let mut target: Option<String> = None;
+    let mut targets: Vec<String> = Vec::new();
     let mut rel_path: Option<String> = None;
     let mut batch_id: Option<String> = None;
     let mut batch_name: Option<String> = None;
@@ -278,7 +278,11 @@ pub async fn api_send(
         let name = field.name().unwrap_or("").to_string();
         if name == "target" {
             match field.text().await {
-                Ok(v) => target = Some(v),
+                Ok(v) => {
+                    if targets.len() < 32 && !v.trim().is_empty() {
+                        targets.push(v.trim().to_string());
+                    }
+                }
                 Err(e) => {
                     cleanup_staged(&file_meta).await;
                     return err(
@@ -406,66 +410,105 @@ pub async fn api_send(
         file_meta = Some((filename, size, staged, Some(sha)));
     }
 
-    let target = match target {
-        Some(t) if !t.trim().is_empty() => t.trim().to_string(),
-        _ => {
-            cleanup_staged(&file_meta).await;
-            return err(StatusCode::BAD_REQUEST, "target is required");
-        }
-    };
+    if targets.is_empty() {
+        cleanup_staged(&file_meta).await;
+        return err(StatusCode::BAD_REQUEST, "target is required");
+    }
     let (filename, size, staged, sha) = match file_meta {
         Some(f) => f,
         None => return err(StatusCode::BAD_REQUEST, "file is required"),
     };
 
-    // Resolve the target: peer id or manual address.
-    let peer = match state.peers.find(&target).await {
-        Some(p) => p,
-        None => {
-            let my_port = *state.transfers.my_port.read().await;
-            let allow_loopback = is_local_peer(&request_addr);
-            match parse_peer_addr_with(&target, my_port, allow_loopback) {
-                Ok(s) => Peer {
-                    id: format!("manual-{}", s),
-                    name: s.ip().to_string(),
-                    addr: s.ip().to_string(),
-                    port: s.port(),
-                    source: "manual".into(),
-                },
-                Err(e) => {
-                    cleanup_file(&staged).await;
-                    return err(StatusCode::BAD_REQUEST, format!("unknown target: {e}"));
+    // Resolve every target first: peer id or manual address.
+    let mut peers: Vec<Peer> = Vec::new();
+    for target in &targets {
+        let peer = match state.peers.find(target).await {
+            Some(p) => p,
+            None => {
+                let my_port = *state.transfers.my_port.read().await;
+                let allow_loopback = is_local_peer(&request_addr);
+                match parse_peer_addr_with(target, my_port, allow_loopback) {
+                    Ok(socket) => Peer {
+                        id: format!("manual-{socket}"),
+                        name: socket.ip().to_string(),
+                        addr: socket.ip().to_string(),
+                        port: socket.port(),
+                        source: "manual".into(),
+                    },
+                    Err(e) => {
+                        cleanup_file(&staged).await;
+                        return err(StatusCode::BAD_REQUEST, format!("unknown target: {e}"));
+                    }
                 }
             }
+        };
+        if !peers.iter().any(|p| p.id == peer.id) {
+            peers.push(peer);
         }
-    };
+    }
 
-    let meta = crate::transfer::sender::SendMeta {
-        batch: batch_id.map(|id| crate::transfer::sender::SendBatch {
-            id,
-            name: batch_name.unwrap_or_else(|| filename.clone()),
-        }),
-        rel_path,
-    };
-    let id = match spawn_send_in(
-        meta,
-        &state.transfers,
-        peer,
-        filename,
-        size,
-        sha,
-        staged.clone(),
-    )
-    .await
-    {
-        Ok(id) => id,
-        Err(e) => {
-            cleanup_file(&staged).await;
-            return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+    let batch = batch_id.map(|id| crate::transfer::sender::SendBatch {
+        id,
+        name: batch_name.unwrap_or_else(|| filename.clone()),
+    });
+
+    // One upload, one hash, one staged file — then a hard-linked copy per device,
+    // because each transfer removes its own staged file when it ends.
+    let staging = staging_dir_for(state.config_dir.as_deref());
+    if let Err(e) = tokio::fs::create_dir_all(&staging).await {
+        cleanup_file(&staged).await;
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to create staging dir: {e}"),
+        );
+    }
+    let mut transfer_ids = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    for peer in peers {
+        let staged_for_peer = match stage_by_link_or_copy(&staged, &staging).await {
+            Ok(path) => path,
+            Err(e) => {
+                errors.push(format!("{}: {e}", peer.name));
+                continue;
+            }
+        };
+        let meta = crate::transfer::sender::SendMeta {
+            batch: batch.clone(),
+            rel_path: rel_path.clone(),
+        };
+        match spawn_send_in(
+            meta,
+            &state.transfers,
+            peer.clone(),
+            filename.clone(),
+            size,
+            sha.clone(),
+            staged_for_peer.clone(),
+        )
+        .await
+        {
+            Ok(id) => transfer_ids.push(id),
+            Err(e) => {
+                cleanup_file(&staged_for_peer).await;
+                errors.push(format!("{}: {e}", peer.name));
+            }
         }
-    };
+    }
+    cleanup_file(&staged).await;
 
-    Json(json!({ "transfer_id": id })).into_response()
+    if transfer_ids.is_empty() {
+        let reason = errors
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "no targets".to_string());
+        return err(StatusCode::INTERNAL_SERVER_ERROR, reason);
+    }
+    Json(json!({
+        "transfer_id": transfer_ids[0],
+        "transfer_ids": transfer_ids,
+        "errors": errors,
+    }))
+    .into_response()
 }
 
 /// Cancel a transfer if possible.
@@ -710,7 +753,7 @@ pub async fn api_open_downloads(
     let dir = state.cfg.read().await.downloads.clone();
     #[cfg(target_os = "linux")]
     {
-        match crate::util::spawn_detached(std::process::Command::new("xdg-open").arg(&dir)) {
+        match crate::util::open_target(&dir) {
             Ok(()) => Json(json!({ "ok": true, "path": dir })).into_response(),
             Err(e) => err(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1054,6 +1097,47 @@ fn validate_dir(raw: &str) -> Result<PathBuf, String> {
         ));
     }
     Ok(canon)
+}
+
+/// Accept every waiting member of a batch (one request for a whole folder).
+///
+/// Same locality policy as accepting a single transfer: a device on the LAN may
+/// accept, but settings stay machine-local.
+pub async fn api_accept_batch(
+    State(state): State<AppState>,
+    Path(batch_id): Path<String>,
+) -> Response {
+    let ids = state.transfers.waiting_in_batch(&batch_id).await;
+    if ids.is_empty() {
+        return err(StatusCode::NOT_FOUND, format!("unknown batch {batch_id}"));
+    }
+    let mut accepted = 0usize;
+    let mut errors = Vec::new();
+    for id in &ids {
+        match state.transfers.accept(id, None).await {
+            Ok(_) => accepted += 1,
+            Err(e) => errors.push(format!("{id}: {e}")),
+        }
+    }
+    Json(json!({ "accepted": accepted, "errors": errors })).into_response()
+}
+
+/// Reject every waiting member of a batch.
+pub async fn api_reject_batch(
+    State(state): State<AppState>,
+    Path(batch_id): Path<String>,
+) -> Response {
+    let ids = state.transfers.waiting_in_batch(&batch_id).await;
+    if ids.is_empty() {
+        return err(StatusCode::NOT_FOUND, format!("unknown batch {batch_id}"));
+    }
+    let mut rejected = 0usize;
+    for id in &ids {
+        if state.transfers.reject(id).await.is_ok() {
+            rejected += 1;
+        }
+    }
+    Json(json!({ "rejected": rejected })).into_response()
 }
 
 /// Process-wide counters since startup (transfers, bytes moved).

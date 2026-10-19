@@ -343,17 +343,17 @@ pub struct SystemInterfaces;
 
 impl InterfaceSource for SystemInterfaces {
     fn addresses(&self) -> Vec<IfaceAddr> {
-        let Ok(ifaces) = nix::ifaddrs::getifaddrs() else {
+        let Ok(ifaces) = if_addrs::get_if_addrs() else {
             return Vec::new();
         };
         ifaces
-            .filter_map(|iface| {
-                let addr = iface.address?;
-                let sa = addr.as_sockaddr_in()?;
-                Some(IfaceAddr {
-                    name: iface.interface_name,
-                    addr: IpAddr::V4(sa.ip()),
-                })
+            .into_iter()
+            .filter_map(|iface| match iface.addr {
+                if_addrs::IfAddr::V4(v4) => Some(IfaceAddr {
+                    name: iface.name,
+                    addr: IpAddr::V4(v4.ip),
+                }),
+                _ => None,
             })
             .collect()
     }
@@ -548,24 +548,20 @@ fn beacon_destinations() -> Vec<SocketAddr> {
 }
 
 fn subnet_broadcasts() -> Vec<Ipv4Addr> {
-    let Ok(ifaces) = nix::ifaddrs::getifaddrs() else {
+    let Ok(ifaces) = if_addrs::get_if_addrs() else {
         return Vec::new();
     };
-    ifaces
-        .filter_map(|iface| {
-            if skip_iface(&iface.interface_name) {
-                return None;
-            }
-            let ip = iface.address?.as_sockaddr_in()?.ip();
-            if ip.is_loopback() || ip.is_link_local() {
-                return None;
-            }
-            iface
-                .broadcast
-                .and_then(|b| b.as_sockaddr_in().map(|s| s.ip()))
-                .filter(|b| !b.is_unspecified() && !b.is_loopback())
+    let mut out: Vec<Ipv4Addr> = ifaces
+        .into_iter()
+        .filter(|iface| !skip_iface(&iface.name))
+        .filter_map(|iface| match iface.addr {
+            if_addrs::IfAddr::V4(v4) => v4.broadcast,
+            _ => None,
         })
-        .collect()
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 async fn bind_discovery_socket() -> std::io::Result<UdpSocket> {

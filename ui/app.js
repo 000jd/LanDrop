@@ -57,7 +57,7 @@ function fmtBuild(unixSecs) {
 const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 
 // Upper bound per batch: one transfer per file, and each one is a real upload.
-const MAX_BATCH_FILES = 32;
+const MAX_BATCH_FILES = 500;
 // Quote-safe: safe for both text and attribute contexts.
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ESCAPES[c]);
@@ -283,7 +283,7 @@ function renderPeers() {
         el.onkeydown = (e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
-            selectPeer(p);
+            togglePeer(p);
           }
         };
         list.appendChild(el);
@@ -542,29 +542,25 @@ function batchMembers(id, statuses) {
 
 async function acceptBatch(id) {
   const waiting = batchMembers(id, ["waiting"]);
-  let ok = 0;
-  for (const t of waiting) {
-    try {
-      await api(`/api/transfers/${t.id}/accept`, { method: "POST" });
-      ok++;
-    } catch {
-      // Keep going: one bad member must not block the rest.
-    }
+  try {
+    // One request for the whole folder, not one per file.
+    const res = await api(`/api/batches/${encodeURIComponent(id)}/accept`, { method: "POST" });
+    const ok = (res && res.accepted) || 0;
+    toast(`Accepted ${fileCount(ok)}`, ok ? "success" : "error");
+  } catch (e) {
+    toast("Accept failed: " + e.message, "error");
   }
-  toast(ok === waiting.length ? `Accepted ${ok} files` : `Accepted ${ok} of ${waiting.length}`, ok ? "success" : "error");
   await loadTransfers();
 }
 
 async function rejectBatch(id) {
   const waiting = batchMembers(id, ["waiting"]);
-  for (const t of waiting) {
-    try {
-      await api(`/api/transfers/${t.id}/reject`, { method: "POST" });
-    } catch {
-      // Best effort.
-    }
+  try {
+    await api(`/api/batches/${encodeURIComponent(id)}/reject`, { method: "POST" });
+    toast(`Rejected ${fileCount(waiting.length)}`);
+  } catch (e) {
+    toast("Reject failed: " + e.message, "error");
   }
-  toast(waiting.length === 1 ? "Rejected" : `Rejected ${waiting.length} files`);
   await loadTransfers();
 }
 
@@ -668,37 +664,34 @@ async function sendFiles() {
   // stays a plain individual transfer).
   const batchId = files.length > 1 ? `ui-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` : null;
   const failures = [];              // human-readable, for the summary toast
-  const failedPerFile = new Map();  // file -> how many targets refused it
-  const total = files.length * targets.length;
-  let done = 0;
+  const failedFiles = new Set();    // files the server could not queue at all
   try {
-    for (const target of targets) {
-      for (const file of files) {
-        done++;
-        btn.textContent =
-          total > 1 ? `Uploading ${done}/${total} → ${target.label}…` : "Uploading…";
-        const fd = new FormData();
-        fd.append("target", target.address);
-        fd.append("file", file, file.name);
-        // Folder sends: the receiver rebuilds the tree from this path.
-        const rel = state.relPaths.get(file);
-        if (rel) fd.append("rel_path", rel);
-        if (batchId) {
-          fd.append("batch_id", batchId);
-          fd.append("batch_name", `${files.length} files`);
-        }
-        try {
-          await api("/api/send", { method: "POST", body: fd });
-        } catch (e) {
-          failedPerFile.set(file, (failedPerFile.get(file) || 0) + 1);
-          failures.push(`${file.name} → ${target.label}: ${e.message}`);
-        }
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      btn.textContent =
+        files.length > 1 ? `Uploading ${i + 1}/${files.length}…` : "Uploading…";
+      // One upload for every device: the node stages and hashes the file once,
+      // then hard-links a copy per target.
+      const fd = new FormData();
+      for (const target of targets) fd.append("target", target.address);
+      fd.append("file", file, file.name);
+      // Folder sends: the receiver rebuilds the tree from this path.
+      const rel = state.relPaths.get(file);
+      if (rel) fd.append("rel_path", rel);
+      if (batchId) {
+        fd.append("batch_id", batchId);
+        fd.append("batch_name", fileCount(files.length));
+      }
+      try {
+        await api("/api/send", { method: "POST", body: fd });
+      } catch (e) {
+        failedFiles.add(file);
+        failures.push(`${file.name}: ${e.message}`);
       }
     }
 
-    // Keep only files no target accepted, so a retry does not resend accepted
-    // copies; everything else leaves the picker.
-    const keep = files.filter((f) => failedPerFile.get(f) === targets.length);
+    // Keep only files the node refused, so a retry does not resend the rest.
+    const keep = files.filter((f) => failedFiles.has(f));
     state.selectedFiles = keep;
     for (const f of files) if (!keep.includes(f)) state.relPaths.delete(f);
     state.selectedFile = keep[0] || null;
@@ -706,7 +699,7 @@ async function sendFiles() {
     renderFileChosen();
     await loadTransfers();
 
-    const sent = total - failures.length;
+    const sent = files.length - failedFiles.size;
     const howMany = targets.length > 1 ? `${targets.length} devices` : targets[0].label;
     if (failures.length === 0) {
       toast(total === 1 ? "Transfer started" : `${sent} transfers started (${howMany})`, "success");
