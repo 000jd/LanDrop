@@ -40,6 +40,7 @@ uuid = { version = "1", features = ["v4"] }
 futures-util = "0.3"
 bytes = "1"
 if-addrs = "0.13"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 # Unix-only helpers (interface addresses, disk space, instance lock). Everything
 # else builds natively on Windows and macOS too.

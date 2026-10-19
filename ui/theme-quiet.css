@@ -1091,6 +1091,32 @@ a.btn {
   flex-shrink: 0;
 }
 
+/* QR dialog + share link */
+.qr-form {
+  width: min(460px, 100%);
+}
+
+.qr-wrap {
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  border: var(--outline) solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--card-2);
+}
+
+#qrImage {
+  width: 240px;
+  height: 240px;
+  image-rendering: pixelated;
+}
+
+.file-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* --------------------------------------------------------------------------
    Bottom navigation (phones)
    -------------------------------------------------------------------------- */

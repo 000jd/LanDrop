@@ -19,6 +19,15 @@ use crate::transfer::TransferManager;
 
 pub mod handlers;
 
+/// A staged file offered over a temporary browser link.
+#[derive(Debug, Clone)]
+pub struct ShareEntry {
+    pub path: PathBuf,
+    pub filename: String,
+    /// Unix seconds; expired entries are swept and their file removed.
+    pub expires_at: i64,
+}
+
 /// Shared application state handed to every handler.
 #[derive(Clone)]
 pub struct AppState {
@@ -40,6 +49,8 @@ pub struct AppState {
     /// Devices the local UI has selected. The desktop window cannot expose its
     /// state to Rust, so a native file drop sends to whatever is selected here.
     pub ui_selection: Arc<RwLock<Vec<String>>>,
+    /// Temporary browser download links (`/d/{token}`), swept after 15 minutes.
+    pub shares: Arc<RwLock<std::collections::HashMap<String, ShareEntry>>>,
     /// Explicit config dir when the node runs with a custom one (staging and
     /// instance bookkeeping live there).
     pub config_dir: Option<PathBuf>,
@@ -57,6 +68,7 @@ impl AppState {
             shutdown: Arc::new(std::sync::OnceLock::new()),
             on_focus: None,
             ui_selection: Arc::new(RwLock::new(Vec::new())),
+            shares: Arc::new(RwLock::new(std::collections::HashMap::new())),
             config_dir: None,
         }
     }
@@ -104,6 +116,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/ui/selection", post(handlers::api_ui_selection))
         .route("/api/send-path", post(handlers::api_send_path))
         .route("/api/send-text", post(handlers::api_send_text))
+        .route("/api/qr", get(handlers::api_qr))
+        .route("/api/share-link", post(handlers::api_share_link))
+        .route(
+            "/api/share-link/{token}",
+            axum::routing::delete(handlers::api_delete_share),
+        )
+        // Browser-direct download for a device without LanDrop installed.
+        .route("/d/{token}", get(handlers::api_download_share))
         .route("/api/downloads/open", post(handlers::api_open_downloads))
         // Folder picker (machine-local): list subdirectories / create one.
         .route("/api/fs/list", get(handlers::api_list_dirs))

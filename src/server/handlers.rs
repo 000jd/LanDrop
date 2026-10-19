@@ -1294,6 +1294,242 @@ async fn resolve_peers(
     Ok(peers)
 }
 
+/// Query for `GET /api/qr`.
+#[derive(Debug, Deserialize)]
+pub struct QrQuery {
+    #[serde(default)]
+    share: Option<String>,
+}
+
+/// The URL QR codes point at: first non-loopback IPv4, else loopback.
+async fn primary_lan_url(state: &AppState) -> String {
+    let port = *state.transfers.my_port.read().await;
+    let ip = crate::discovery::local_ipv4_addrs()
+        .into_iter()
+        .next()
+        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    format!("http://{ip}:{port}")
+}
+
+/// Inline SVG QR code for this node's URL, or for a live share link.
+///
+/// Only URLs this node actually owns are encoded — never an arbitrary string —
+/// so the endpoint cannot be used to mint QR codes pointing elsewhere.
+pub async fn api_qr(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<QrQuery>,
+) -> Response {
+    let base = primary_lan_url(&state).await;
+    let url = match query.share.as_deref() {
+        None => base,
+        Some(token) => {
+            if !state.shares.read().await.contains_key(token) {
+                return err(StatusCode::NOT_FOUND, "unknown share link");
+            }
+            format!("{base}/d/{token}")
+        }
+    };
+    match qrcode::QrCode::new(url.as_bytes()) {
+        Ok(code) => {
+            let svg = code
+                .render::<qrcode::render::svg::Color>()
+                .min_dimensions(240, 240)
+                .quiet_zone(true)
+                .build();
+            (
+                [(header::CONTENT_TYPE, "image/svg+xml; charset=utf-8")],
+                svg,
+            )
+                .into_response()
+        }
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("could not render the QR code: {e}"),
+        ),
+    }
+}
+
+/// Escape a filename for a quoted `Content-Disposition` parameter.
+///
+/// Quotes and backslashes would break the header, so they become `_`; anything
+/// outside printable ASCII is replaced too (the ASCII form stays valid).
+fn escape_header_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            '"' | '\\' => '_',
+            c if c.is_ascii_graphic() || c == ' ' => c,
+            _ => '_',
+        })
+        .collect()
+}
+
+/// Create a temporary browser download link (local requests only).
+///
+/// The file is staged in the outbox and served by [`api_download_share`] to any
+/// device on the LAN for fifteen minutes, so a phone can download without
+/// LanDrop installed.
+pub async fn api_share_link(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    mut multipart: Multipart,
+) -> Response {
+    if !is_local_peer(&addr) {
+        return err(
+            StatusCode::FORBIDDEN,
+            "share links can only be created from this machine",
+        );
+    }
+    let dir = staging_dir_for(state.config_dir.as_deref());
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to create staging dir: {e}"),
+        );
+    }
+
+    let mut saved: Option<(PathBuf, String)> = None;
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(e) => {
+                if let Some((path, _)) = saved.take() {
+                    let _ = tokio::fs::remove_file(&path).await;
+                }
+                return err(StatusCode::BAD_REQUEST, format!("invalid body: {e}"));
+            }
+        };
+        if field.name() != Some("file") {
+            continue;
+        }
+        let filename = crate::protocol::sanitize_filename(field.file_name().unwrap_or("download"));
+        let path = dir.join(format!(".share-{}", uuid::Uuid::new_v4()));
+        let mut file = match tokio::fs::File::create(&path).await {
+            Ok(file) => file,
+            Err(e) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to stage the file: {e}"),
+                )
+            }
+        };
+        let mut field = field;
+        loop {
+            match field.chunk().await {
+                Ok(Some(chunk)) => {
+                    if let Err(e) = file.write_all(&chunk).await {
+                        let _ = tokio::fs::remove_file(&path).await;
+                        return err(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("failed to stage the file: {e}"),
+                        );
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    let _ = tokio::fs::remove_file(&path).await;
+                    return err(StatusCode::BAD_REQUEST, format!("invalid body: {e}"));
+                }
+            }
+        }
+        if let Err(e) = file.flush().await {
+            let _ = tokio::fs::remove_file(&path).await;
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to stage the file: {e}"),
+            );
+        }
+        saved = Some((path, filename));
+        break;
+    }
+    let Some((path, filename)) = saved else {
+        return err(StatusCode::BAD_REQUEST, "file is required");
+    };
+
+    let token = uuid::Uuid::new_v4().to_string();
+    let expires_at = crate::transfer::now_secs() + 15 * 60;
+    state.shares.write().await.insert(
+        token.clone(),
+        crate::server::ShareEntry {
+            path,
+            filename: filename.clone(),
+            expires_at,
+        },
+    );
+    let base = primary_lan_url(&state).await;
+    Json(json!({
+        "token": token,
+        "url": format!("{base}/d/{token}"),
+        "filename": filename,
+        "expires_at": expires_at,
+    }))
+    .into_response()
+}
+
+/// Serve a share link to any device on the LAN (`/d/{token}`).
+pub async fn api_download_share(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+) -> Response {
+    let entry = state.shares.read().await.get(&token).cloned();
+    let Some(entry) = entry else {
+        return err(StatusCode::NOT_FOUND, "this link does not exist");
+    };
+    if entry.expires_at <= crate::transfer::now_secs() {
+        // Expired: drop it and its staged file now rather than at the next sweep.
+        state.shares.write().await.remove(&token);
+        let _ = tokio::fs::remove_file(&entry.path).await;
+        return err(StatusCode::GONE, "this link has expired");
+    }
+    let file = match tokio::fs::File::open(&entry.path).await {
+        Ok(file) => file,
+        Err(_) => {
+            state.shares.write().await.remove(&token);
+            return err(StatusCode::GONE, "the shared file is gone");
+        }
+    };
+    let len = file.metadata().await.map(|meta| meta.len()).unwrap_or(0);
+    let disposition = format!(
+        "attachment; filename=\"{}\"",
+        escape_header_filename(&entry.filename)
+    );
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/octet-stream"),
+    );
+    if let Ok(value) = axum::http::HeaderValue::from_str(&len.to_string()) {
+        headers.insert(header::CONTENT_LENGTH, value);
+    }
+    if let Ok(value) = axum::http::HeaderValue::from_str(&disposition) {
+        headers.insert(header::CONTENT_DISPOSITION, value);
+    }
+    let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file));
+    (headers, body).into_response()
+}
+
+/// Revoke a share link and delete its staged file (local requests only).
+pub async fn api_delete_share(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Path(token): Path<String>,
+) -> Response {
+    if !is_local_peer(&addr) {
+        return err(
+            StatusCode::FORBIDDEN,
+            "share links can only be revoked from this machine",
+        );
+    }
+    let entry = state.shares.write().await.remove(&token);
+    match entry {
+        Some(entry) => {
+            let _ = tokio::fs::remove_file(&entry.path).await;
+            Json(json!({ "ok": true })).into_response()
+        }
+        None => err(StatusCode::NOT_FOUND, "this link does not exist"),
+    }
+}
+
 /// Process-wide counters since startup (transfers, bytes moved).
 pub async fn api_metrics(State(state): State<AppState>) -> Response {
     Json(state.transfers.metrics.snapshot()).into_response()
@@ -1698,8 +1934,16 @@ fn err(status: StatusCode, msg: impl Into<String>) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::is_system_dir;
+    use super::{escape_header_filename, is_system_dir};
     use std::path::Path;
+
+    #[test]
+    fn share_filenames_cannot_break_the_header() {
+        assert_eq!(escape_header_filename("holiday.jpg"), "holiday.jpg");
+        assert_eq!(escape_header_filename("we\"ird.txt"), "we_ird.txt");
+        assert_eq!(escape_header_filename("back\\slash.bin"), "back_slash.bin");
+        assert_eq!(escape_header_filename("Ünïcode.txt"), "_n_code.txt");
+    }
 
     #[test]
     fn system_directories_are_refused_but_user_folders_are_not() {

@@ -722,6 +722,59 @@ async function sendFiles() {
   }
 }
 
+let activeShare = null;
+
+/// URL a phone should open for this node.
+function lanUrl() {
+  const info = state.info || {};
+  const ip = (info.ips && info.ips[0]) || location.hostname;
+  return `http://${ip}:${info.port || location.port}`;
+}
+
+/// Inline SVG QR (same-origin, so the strict CSP needs no loosening).
+function showQr(share) {
+  activeShare = share || null;
+  const params = new URLSearchParams();
+  if (activeShare) params.set("share", activeShare.token);
+  $("qrImage").src = "/api/qr" + (params.toString() ? `?${params.toString()}` : "");
+  $("qrUrl").textContent = activeShare ? activeShare.url : lanUrl();
+  $("qrTitle").textContent = activeShare ? "Share this file" : "Open LanDrop on your phone";
+  $("qrNote").textContent = activeShare ? activeShare.filename : "";
+  $("qrHint").textContent = activeShare
+    ? "Link expires in 15 minutes"
+    : "Point your phone camera at the code";
+  $("qrStopBtn").hidden = !activeShare;
+  $("qrDialog").showModal();
+}
+
+async function shareSelectedFile() {
+  const file = state.selectedFiles[0];
+  if (!file) { toast("Pick a file first", "warn"); return; }
+  const fd = new FormData();
+  fd.append("file", file, file.name);
+  try {
+    const info = await api("/api/share-link", { method: "POST", body: fd });
+    showQr(info);
+    toast("Share link ready — scan or copy it", "success");
+  } catch (e) {
+    toast("Share failed: " + e.message, "error");
+  }
+}
+
+async function stopSharing() {
+  if (!activeShare) return;
+  const token = activeShare.token;
+  activeShare = null;
+  $("qrStopBtn").hidden = true;
+  $("qrDialog").close();
+  try {
+    await api(`/api/share-link/${encodeURIComponent(token)}`, { method: "DELETE" });
+    toast("Link revoked");
+  } catch (e) {
+    toast("Could not revoke: " + e.message, "error");
+  }
+}
+
 async function sendText() {
   const el = $("textToSend");
   const text = el.value.trim();
@@ -769,8 +822,11 @@ async function cancelTransfer(id) {
 
 async function acceptTransfer(id) {
   try {
+    // A snippet is not saved anywhere, so never ask for a folder for it.
+    const transfer = state.transfers.find((x) => x.id === id);
+    const isSnippet = Boolean(transfer && transfer.text);
     let saveDir = null;
-    if (state.settings && state.settings.ask_save_path) {
+    if (!isSnippet && state.settings && state.settings.ask_save_path) {
       const choice = await openPicker("accept", state.settings.downloads);
       if (!choice) return; // cancelled: leave the request pending
       if (choice.action === "use") saveDir = choice.path;
@@ -782,7 +838,11 @@ async function acceptTransfer(id) {
     }
     await api(`/api/transfers/${id}/accept`, opts);
     toast(
-      saveDir ? `Accepted — saving to ${saveDir}` : "Accepted — waiting for the file…",
+      isSnippet
+        ? "Snippet accepted"
+        : saveDir
+          ? `Accepted — saving to ${saveDir}`
+          : "Accepted — waiting for the file…",
       "success"
     );
     await loadTransfers();
@@ -1264,6 +1324,19 @@ function init() {
   };
   $("sendBtn").onclick = sendFiles;
   $("sendTextBtn").onclick = sendText;
+  $("showQrBtn").onclick = () => showQr(null);
+  $("settingsQrBtn").onclick = () => showQr(null);
+  $("shareLinkBtn").onclick = shareSelectedFile;
+  $("qrCloseBtn").onclick = () => $("qrDialog").close();
+  $("qrStopBtn").onclick = stopSharing;
+  $("qrCopyBtn").onclick = async () => {
+    try {
+      await navigator.clipboard.writeText($("qrUrl").textContent);
+      toast("Link copied", "success");
+    } catch {
+      toast("Clipboard is not available here", "error");
+    }
+  };
   $("addManualBtn").onclick = addManualPeer;
   $("manualAddr").oninput = updateSendTargetLabel;
   $("saveSettingsBtn").onclick = saveSettings;

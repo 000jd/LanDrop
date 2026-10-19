@@ -578,6 +578,7 @@ impl TransferManager {
     /// (the folder is validated by the caller before accept).
     pub async fn accept(&self, id: &str, save_dir: Option<PathBuf>) -> Result<()> {
         let token = uuid::Uuid::new_v4().to_string();
+        let mut snippet_completed = false;
         {
             let mut map = self.transfers.write().await;
             let t = map
@@ -594,6 +595,7 @@ impl TransferManager {
             }
             if t.text.is_some() {
                 // A snippet has no file behind it: accept == done.
+                snippet_completed = true;
                 t.status = Status::Completed;
                 t.progress = 1.0;
                 t.save_dir = None;
@@ -606,8 +608,15 @@ impl TransferManager {
             }
             t.updated_at = now_secs();
         }
-        self.emit_update(id, "transfer_updated").await;
-        info!("accepted transfer {id}");
+        if snippet_completed {
+            // receive_stream never runs for a snippet, so this is its completion.
+            self.metrics.transfer_finished();
+            self.emit_update(id, "transfer_completed").await;
+            info!("accepted transfer {id} (text snippet, completed)");
+        } else {
+            self.emit_update(id, "transfer_updated").await;
+            info!("accepted transfer {id}");
+        }
         Ok(())
     }
 

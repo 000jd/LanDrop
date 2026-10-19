@@ -249,13 +249,30 @@ pub async fn start_node(options: NodeOptions) -> Result<RunningNode> {
     // Periodic transfer expiry sweep (stops with the node).
     {
         let mgr = transfers.clone();
+        let shares = state.shares.clone();
         let mut stop = shutdown_rx.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(10));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tokio::select! {
-                    _ = ticker.tick() => mgr.expire_stale().await,
+                    _ = ticker.tick() => {
+                        mgr.expire_stale().await;
+                        // Expired browser links take their staged file with them.
+                        let now = crate::transfer::now_secs();
+                        let dead: Vec<crate::server::ShareEntry> = {
+                            let mut map = shares.write().await;
+                            let ids: Vec<String> = map
+                                .iter()
+                                .filter(|(_, entry)| entry.expires_at <= now)
+                                .map(|(token, _)| token.clone())
+                                .collect();
+                            ids.iter().filter_map(|token| map.remove(token)).collect()
+                        };
+                        for entry in dead {
+                            let _ = tokio::fs::remove_file(&entry.path).await;
+                        }
+                    }
                     _ = events::wait_shutdown(&mut stop) => break,
                 }
             }

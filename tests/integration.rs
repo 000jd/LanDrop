@@ -791,6 +791,119 @@ async fn text_snippets_need_consent_and_write_no_file() {
 }
 
 #[tokio::test]
+async fn qr_codes_and_browser_share_links() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, port, _) = instance("bob", dir.path().join("dl")).await;
+    let base = format!("http://127.0.0.1:{port}");
+    let client = reqwest::Client::new();
+
+    // QR: an inline SVG for our own URL, and a 404 for an unknown share token.
+    let resp = client.get(format!("{base}/api/qr")).send().await.unwrap();
+    assert!(resp.status().is_success());
+    assert!(
+        resp.headers()[reqwest::header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("image/svg+xml"),
+        "QR must be served as SVG"
+    );
+    assert!(resp.text().await.unwrap().contains("<svg"));
+    let resp = client
+        .get(format!("{base}/api/qr?share=nope"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+
+    // Share link: create, download, revoke.
+    let payload = b"shared bytes".to_vec();
+    let form = reqwest::multipart::Form::new().part(
+        "file",
+        reqwest::multipart::Part::bytes(payload.clone()).file_name("weird\"name.txt"),
+    );
+    let resp = client
+        .post(format!("{base}/api/share-link"))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "share rejected: {resp:?}");
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let token = body["token"].as_str().unwrap().to_string();
+    assert!(body["url"]
+        .as_str()
+        .unwrap()
+        .ends_with(&format!("/d/{token}")));
+
+    let resp = client
+        .get(format!("{base}/d/{token}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "download failed: {resp:?}");
+    assert_eq!(
+        resp.headers()[reqwest::header::CONTENT_LENGTH]
+            .to_str()
+            .unwrap(),
+        payload.len().to_string()
+    );
+    let disposition = resp.headers()[reqwest::header::CONTENT_DISPOSITION]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        disposition.starts_with("attachment; filename=\""),
+        "{disposition}"
+    );
+    assert_eq!(
+        disposition.matches('"').count(),
+        2,
+        "a quote in the filename must not break the header: {disposition}"
+    );
+    assert_eq!(resp.bytes().await.unwrap().to_vec(), payload);
+
+    // A live token gets its own QR; revoking removes both the link and the file.
+    let resp = client
+        .get(format!("{base}/api/qr?share={token}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let resp = client
+        .delete(format!("{base}/api/share-link/{token}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let resp = client
+        .get(format!("{base}/d/{token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+
+    // Expired links are refused and their staged file is removed on the spot.
+    let staged = dir.path().join("expired.bin");
+    std::fs::write(&staged, b"x").unwrap();
+    state.shares.write().await.insert(
+        "expired".to_string(),
+        landrop::server::ShareEntry {
+            path: staged.clone(),
+            filename: "x.bin".into(),
+            expires_at: landrop::transfer::now_secs() - 1,
+        },
+    );
+    let resp = client
+        .get(format!("{base}/d/expired"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::GONE);
+    assert!(!staged.exists(), "expired link must delete its staged file");
+    assert!(!state.shares.read().await.contains_key("expired"));
+}
+
+#[tokio::test]
 async fn metrics_endpoint_reports_counters() {
     let dir = tempfile::tempdir().unwrap();
     let (_, port, _) = instance("dave", dir.path().join("dl")).await;
