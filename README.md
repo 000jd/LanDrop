@@ -67,7 +67,45 @@ same features, same theme.
 
 ## Quick start
 
-### Browser mode (no extra dependencies)
+### One-line install (Linux & macOS)
+
+No sudo, no build tools:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/000jd/LanDrop/main/install/install.sh | bash
+```
+
+The installer detects your OS and CPU, downloads the matching `v0.1.0` asset and
+`SHA256SUMS.txt`, verifies the SHA-256 checksum, and installs
+`~/.local/bin/landrop`. In a graphical session it also installs the desktop app
+(force it with `--desktop`); if a prebuilt binary is not available yet and
+`cargo` is installed, it falls back to `cargo install --git … --locked`.
+
+Uninstall:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/000jd/LanDrop/main/install/install.sh | bash -s -- --uninstall
+```
+
+If `~/.local/bin` is not on your `PATH`, the installer prints the exact `export
+PATH=…` line to add.
+
+### Direct downloads (v0.1.0)
+
+| Platform | Download | Notes |
+|---|---|---|
+| Linux x86_64 | [`LanDrop-v0.1.0-linux-x86_64`](https://github.com/000jd/LanDrop/releases/download/v0.1.0/LanDrop-v0.1.0-linux-x86_64) | standalone CLI + browser UI |
+| Linux x86_64 | [`LanDrop-v0.1.0-linux-x86_64-desktop`](https://github.com/000jd/LanDrop/releases/download/v0.1.0/LanDrop-v0.1.0-linux-x86_64-desktop) | Tauri desktop app (window + tray) |
+| Debian / Ubuntu | [`LanDrop-v0.1.0-linux-amd64.deb`](https://github.com/000jd/LanDrop/releases/download/v0.1.0/LanDrop-v0.1.0-linux-amd64.deb) | `sudo dpkg -i …` |
+| Fedora / RHEL | [`LanDrop-v0.1.0-linux-x86_64.rpm`](https://github.com/000jd/LanDrop/releases/download/v0.1.0/LanDrop-v0.1.0-linux-x86_64.rpm) | `sudo rpm -i …` |
+| Linux | [`LanDrop-v0.1.0-linux-x86_64.AppImage`](https://github.com/000jd/LanDrop/releases/download/v0.1.0/LanDrop-v0.1.0-linux-x86_64.AppImage) | `chmod +x … && ./…` |
+| macOS arm64 | [`LanDrop-v0.1.0-macos-arm64`](https://github.com/000jd/LanDrop/releases/download/v0.1.0/LanDrop-v0.1.0-macos-arm64) | Apple silicon |
+| macOS x86_64 | [`LanDrop-v0.1.0-macos-x86_64`](https://github.com/000jd/LanDrop/releases/download/v0.1.0/LanDrop-v0.1.0-macos-x86_64) | Intel |
+| Windows x86_64 | [`LanDrop-v0.1.0-windows-x86_64.exe`](https://github.com/000jd/LanDrop/releases/download/v0.1.0/LanDrop-v0.1.0-windows-x86_64.exe) | browser mode |
+| Android arm64 | [`LanDrop-v0.1.0-android-arm64.apk`](https://github.com/000jd/LanDrop/releases/download/v0.1.0/LanDrop-v0.1.0-android-arm64.apk) | signed APK, sideload |
+| All assets | [`SHA256SUMS.txt`](https://github.com/000jd/LanDrop/releases/download/v0.1.0/SHA256SUMS.txt) | verify with `sha256sum -c` / `shasum -a 256 -c` |
+
+### Build from source (browser mode)
 
 ```bash
 make build                    # -> bin/landrop (release)
@@ -115,7 +153,7 @@ no install at all.
 
 | Need | Start here |
 |---|---|
-| Install & build | [Quick start](#quick-start) · [Build](#build) · [Windows](#windows-build-browser-mode) |
+| Install & build | [One-line installer](#one-line-install-linux--macos) · [Quick start](#quick-start) · [Build](#build) · [Windows](#windows-build-browser-mode) |
 | Android | [Android app](#android-app) · [Updating an installed copy](#updating-an-installed-copy) |
 | Sending & receiving | [Features](#features) · [Run on two real machines](#run-on-two-real-machines) |
 | Troubleshooting | [Firewall](#firewall) · [mDNS troubleshooting](#mdns-troubleshooting) · [Known limitations](#known-limitations) |

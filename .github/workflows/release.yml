@@ -1,0 +1,186 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build (for example v0.1.0)"
+        required: true
+        type: string
+        default: "v0.1.0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  linux:
+    name: Linux x86_64
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl wget file libssl-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf rpm libfuse2
+
+      - name: Build CLI
+        run: cargo build --release --locked
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build desktop app and bundles
+        run: |
+          cd desktop
+          cargo tauri build --bundles deb,rpm,appimage
+
+      - name: Collect Linux artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/release/landrop "dist/LanDrop-${TAG}-linux-x86_64"
+          cp target/release/landrop-desktop "dist/LanDrop-${TAG}-linux-x86_64-desktop"
+          cp "$(ls target/release/bundle/deb/*.deb | head -n1)" \
+            "dist/LanDrop-${TAG}-linux-amd64.deb"
+          if ls target/release/bundle/rpm/*.rpm >/dev/null 2>&1; then
+            cp "$(ls target/release/bundle/rpm/*.rpm | head -n1)" \
+              "dist/LanDrop-${TAG}-linux-x86_64.rpm"
+          fi
+          if ls target/release/bundle/appimage/*.AppImage >/dev/null 2>&1; then
+            cp "$(ls target/release/bundle/appimage/*.AppImage | head -n1)" \
+              "dist/LanDrop-${TAG}-linux-x86_64.AppImage"
+          fi
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-dist
+          path: dist/*
+
+  macos:
+    name: macOS arm64 + x86_64
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build both macOS architectures
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+
+      - name: Collect macOS artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/aarch64-apple-darwin/release/landrop \
+            "dist/LanDrop-${TAG}-macos-arm64"
+          cp target/x86_64-apple-darwin/release/landrop \
+            "dist/LanDrop-${TAG}-macos-x86_64"
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dist
+          path: dist/*
+
+  windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Windows CLI
+        run: cargo build --release --locked
+
+      - name: Collect Windows artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/release/landrop.exe \
+            "dist/LanDrop-${TAG}-windows-x86_64.exe"
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-dist
+          path: dist/*
+
+  publish:
+    name: Publish GitHub release
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Merge existing assets, checksum and upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # The release may already contain locally built Linux/Android assets.
+          # Keep them: the published SHA256SUMS.txt must cover every asset.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; merging assets."
+            mkdir -p existing
+            gh release download "$TAG" --dir existing --pattern '*' --clobber || true
+            if [ -d existing ]; then
+              find existing -maxdepth 1 -type f -exec cp -n {} dist/ \;
+            fi
+          else
+            gh release create "$TAG" \
+              --title "LanDrop $TAG" \
+              --notes "LanDrop $TAG"
+          fi
+
+          rm -f dist/SHA256SUMS.txt
+          (
+            cd dist
+            : > SHA256SUMS.txt
+            for file in *; do
+              [ -f "$file" ] || continue
+              [ "$file" = "SHA256SUMS.txt" ] && continue
+              sha256sum "$file" >> SHA256SUMS.txt
+            done
+            sort -k2 SHA256SUMS.txt -o SHA256SUMS.txt
+          )
+
+          gh release upload "$TAG" dist/* --clobber
+          gh release view "$TAG" --json url --jq .url
