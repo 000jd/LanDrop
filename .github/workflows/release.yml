@@ -24,10 +24,63 @@ env:
   TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
-  # Linux (.deb/.rpm/.AppImage/CLI/desktop) and the Android APK are built
-  # locally by scripts/build-artifacts.sh and uploaded to the release. CI only
-  # rebuilds the platforms that cannot be linked from the Linux dev box; the
-  # publish job merges the existing Linux/Android assets into SHA256SUMS.txt.
+  # Linux is the primary target: CI builds the standalone CLI and the Tauri
+  # desktop bundles here. The locally built Android APK is merged by the publish
+  # job when SHA256SUMS.txt is regenerated.
+  linux:
+    name: Linux x86_64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl wget file libssl-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf rpm libfuse2
+
+      - name: Build CLI
+        run: cargo build --release --locked
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build desktop app and bundles
+        run: |
+          cd desktop
+          cargo tauri build --bundles deb,rpm,appimage
+
+      - name: Collect Linux artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/release/landrop "dist/LanDrop-${TAG}-linux-x86_64"
+          cp target/release/landrop-desktop "dist/LanDrop-${TAG}-linux-x86_64-desktop"
+          cp "$(ls target/release/bundle/deb/*.deb | head -n1)" \
+            "dist/LanDrop-${TAG}-linux-amd64.deb"
+          if ls target/release/bundle/rpm/*.rpm >/dev/null 2>&1; then
+            cp "$(ls target/release/bundle/rpm/*.rpm | head -n1)" \
+              "dist/LanDrop-${TAG}-linux-x86_64.rpm"
+          fi
+          if ls target/release/bundle/appimage/*.AppImage >/dev/null 2>&1; then
+            cp "$(ls target/release/bundle/appimage/*.AppImage | head -n1)" \
+              "dist/LanDrop-${TAG}-linux-x86_64.AppImage"
+          fi
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-dist
+          path: dist/*
+
   macos:
     name: macOS arm64 + x86_64
     runs-on: macos-latest
@@ -92,7 +145,7 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    needs: [macos, windows]
+    needs: [linux, macos, windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
