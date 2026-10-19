@@ -28,6 +28,13 @@ pub struct ShareEntry {
     pub expires_at: i64,
 }
 
+/// One hand-off from a system share sheet: copied file paths and/or text.
+#[derive(Debug, Clone, Default)]
+pub struct SharedInboxItem {
+    pub paths: Vec<String>,
+    pub text: Option<String>,
+}
+
 /// Shared application state handed to every handler.
 #[derive(Clone)]
 pub struct AppState {
@@ -51,6 +58,8 @@ pub struct AppState {
     pub ui_selection: Arc<RwLock<Vec<String>>>,
     /// Temporary browser download links (`/d/{token}`), swept after 15 minutes.
     pub shares: Arc<RwLock<std::collections::HashMap<String, ShareEntry>>>,
+    /// Share-sheet hand-offs awaiting pickup by the UI (Android).
+    pub shared_inbox: Arc<RwLock<Vec<SharedInboxItem>>>,
     /// Explicit config dir when the node runs with a custom one (staging and
     /// instance bookkeeping live there).
     pub config_dir: Option<PathBuf>,
@@ -69,6 +78,7 @@ impl AppState {
             on_focus: None,
             ui_selection: Arc::new(RwLock::new(Vec::new())),
             shares: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            shared_inbox: Arc::new(RwLock::new(Vec::new())),
             config_dir: None,
         }
     }
@@ -115,6 +125,10 @@ pub fn router(state: AppState) -> Router {
         // Local-only: the UI tells the node which devices are selected, and the
         // desktop window sends dropped paths to them.
         .route("/api/ui/selection", post(handlers::api_ui_selection))
+        .route(
+            "/api/ui/shared-inbox",
+            get(handlers::api_take_shared_inbox).post(handlers::api_shared_inbox),
+        )
         .route("/api/send-path", post(handlers::api_send_path))
         .route("/api/send-text", post(handlers::api_send_text))
         .route("/api/qr", get(handlers::api_qr))

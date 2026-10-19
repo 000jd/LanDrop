@@ -1775,6 +1775,103 @@ pub async fn api_ui_selection(
     Json(json!({ "ok": true })).into_response()
 }
 
+/// Cap on files one share-sheet hand-off may carry.
+const MAX_SHARED_FILES: usize = 64;
+
+/// Body for `POST /api/ui/shared-inbox`.
+#[derive(Debug, Deserialize, Default)]
+pub struct SharedInboxBody {
+    #[serde(default)]
+    paths: Vec<String>,
+    #[serde(default)]
+    text: String,
+}
+
+/// Queue a system share-sheet hand-off for the UI (machine-local).
+///
+/// Android copies `content://` URIs into its private cache and hands over the
+/// resulting absolute paths; the UI drains the queue and sends them like a
+/// normal selection. Text (a shared link, for example) lands in the snippet box.
+pub async fn api_shared_inbox(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(body): Json<SharedInboxBody>,
+) -> Response {
+    if !is_local_peer(&addr) {
+        return err(
+            StatusCode::FORBIDDEN,
+            "the shared inbox is only available from this machine",
+        );
+    }
+    if body.text.chars().count() > crate::protocol::MAX_TEXT_CHARS {
+        return err(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "text is limited to {} characters",
+                crate::protocol::MAX_TEXT_CHARS
+            ),
+        );
+    }
+    let mut paths: Vec<String> = Vec::new();
+    for raw in body.paths.iter().take(MAX_SHARED_FILES) {
+        let path = PathBuf::from(raw.trim());
+        if !path.is_absolute() {
+            continue;
+        }
+        match tokio::fs::metadata(&path).await {
+            Ok(meta) if meta.is_file() => {
+                let path = path.to_string_lossy().into_owned();
+                if !paths.contains(&path) {
+                    paths.push(path);
+                }
+            }
+            _ => {}
+        }
+    }
+    let text = body.text.trim_end().to_string();
+    if paths.is_empty() && text.trim().is_empty() {
+        return err(StatusCode::BAD_REQUEST, "paths or text are required");
+    }
+    state
+        .shared_inbox
+        .write()
+        .await
+        .push(crate::server::SharedInboxItem {
+            paths: paths.clone(),
+            text: (!text.trim().is_empty()).then_some(text),
+        });
+    Json(json!({ "ok": true, "paths": paths.len() })).into_response()
+}
+
+/// Drain queued share-sheet items (machine-local; the UI calls this).
+pub async fn api_take_shared_inbox(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Response {
+    if !is_local_peer(&addr) {
+        return err(
+            StatusCode::FORBIDDEN,
+            "the shared inbox is only available from this machine",
+        );
+    }
+    let items = std::mem::take(&mut *state.shared_inbox.write().await);
+    let mut paths: Vec<String> = Vec::new();
+    let mut texts: Vec<String> = Vec::new();
+    for item in items {
+        for path in item.paths {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+        if let Some(text) = item.text {
+            if !text.trim().is_empty() {
+                texts.push(text);
+            }
+        }
+    }
+    Json(json!({ "paths": paths, "text": texts.join("\n") })).into_response()
+}
+
 /// Send files and folders **by path** (local requests only).
 ///
 /// A browser cannot hand a path to the server, but an operating-system drop event

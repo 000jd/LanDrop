@@ -14,6 +14,9 @@ const state = {
   selectedFile: null,
   /// Files queued for the next send (one transfer each).
   selectedFiles: [],
+  /// Absolute paths handed over by the system share sheet (Android). These are
+  /// sent through /api/send-path because a webview cannot turn a path into a File.
+  sharedPaths: [],
 };
 
 // ---------------------------------------------------------------------------
@@ -183,6 +186,47 @@ async function loadTransfers() {
     updateAcceptAll();
   } catch (e) {
     toast("Failed to load transfers: " + e.message, "error");
+  }
+}
+
+// Android's share sheet hands us private cache paths and/or text through the
+// node's queue. Drain it into the normal send UI.
+async function pollSharedInbox() {
+  let data;
+  try {
+    data = await api("/api/ui/shared-inbox");
+  } catch (_) {
+    return; // older node or transient error
+  }
+  if (!data) return;
+  let changed = false;
+
+  const paths = Array.isArray(data.paths)
+    ? data.paths.filter((p) => typeof p === "string" && p)
+    : [];
+  if (paths.length > 0) {
+    for (const path of paths) {
+      if (!state.sharedPaths.includes(path)) state.sharedPaths.push(path);
+    }
+    changed = true;
+    toast(
+      paths.length === 1 ? "Shared file ready to send" : `${paths.length} shared files ready to send`,
+      "info"
+    );
+  }
+
+  if (data.text) {
+    const box = $("textToSend");
+    if (box) {
+      box.value = box.value.trim() ? `${box.value}\n${data.text}` : data.text;
+      changed = true;
+      toast("Shared text ready to send", "info");
+    }
+  }
+
+  if (changed) {
+    renderFileChosen();
+    updateSendTargetLabel();
   }
 }
 
@@ -364,7 +408,8 @@ function updateSendTargetLabel() {
   else if (peers.length > 1) label = `${peers.length} devices`;
   $("sendTargetLabel").textContent = label ? "→ " + label : "No device selected";
   const hasTarget = peers.length > 0 || Boolean(manual);
-  $("sendBtn").disabled = !(state.selectedFiles.length > 0 && hasTarget);
+  const hasFiles = state.selectedFiles.length > 0 || state.sharedPaths.length > 0;
+  $("sendBtn").disabled = !(hasFiles && hasTarget);
   // The snippet button follows the same rule, plus "there is text to send".
   const textToSend = $("textToSend");
   if (textToSend) {
@@ -419,8 +464,8 @@ function renderStats() {
     $("infoDisk").textContent = "unknown";
   }
 
-  const f = state.selectedFile;
-  $("fileHint").textContent = f ? "ready to send" : "none yet";
+  const ready = state.selectedFile || state.sharedPaths.length > 0;
+  $("fileHint").textContent = ready ? "ready to send" : "none yet";
 
   const waiting = state.transfers.filter(
     (t) => t.direction === "incoming" && t.status === "waiting"
@@ -705,7 +750,8 @@ function updateBadge() {
 
 async function sendFiles() {
   const files = state.selectedFiles.slice();
-  if (files.length === 0) return;
+  const shared = state.sharedPaths.slice();
+  if (files.length === 0 && shared.length === 0) return;
   const targets = sendTargets();
   if (targets.length === 0) { toast("Choose a device first", "warn"); return; }
 
@@ -716,7 +762,26 @@ async function sendFiles() {
   const batchId = files.length > 1 ? `ui-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` : null;
   const failures = [];              // human-readable, for the summary toast
   const failedFiles = new Set();    // files the server could not queue at all
+  let queuedShared = 0;
   try {
+    // Paths handed over by the Android share sheet go through the node: a
+    // webview cannot turn an absolute path into a File object.
+    if (shared.length > 0) {
+      btn.textContent = "Sending shared files…";
+      try {
+        const res = await api("/api/send-path", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ paths: shared, targets: targets.map((t) => t.address) }),
+        });
+        queuedShared = (res && res.queued) || 0;
+        state.sharedPaths = state.sharedPaths.filter((p) => !shared.includes(p));
+        renderFileChosen();
+      } catch (e) {
+        failures.push(`shared files: ${e.message}`);
+      }
+    }
+
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       btn.textContent =
@@ -750,10 +815,19 @@ async function sendFiles() {
     renderFileChosen();
     await loadTransfers();
 
+    if (files.length === 0) {
+      if (failures.length > 0) {
+        toast(`Send failed: ${failures[0]}`, "error");
+      } else {
+        toast(queuedShared === 1 ? "Shared file queued" : `${queuedShared} shared files queued`, "success");
+      }
+      return;
+    }
+
     const sent = files.length - failedFiles.size;
     const howMany = targets.length > 1 ? `${targets.length} devices` : targets[0].label;
     if (failures.length === 0) {
-      toast(total === 1 ? "Transfer started" : `${sent} transfers started (${howMany})`, "success");
+      toast(files.length === 1 ? "Transfer started" : `${sent} transfers started (${howMany})`, "success");
     } else if (sent === 0) {
       toast(`Send failed: ${failures[0]}`, "error");
     } else {
@@ -1070,15 +1144,26 @@ async function droppedFiles(dataTransfer) {
   return Array.from(dataTransfer.files || []).map((file) => ({ file, relPath: "" }));
 }
 
+/// Basename of a server-side path shared by the Android share sheet.
+function baseName(path) {
+  return String(path || "").split(/[\\/]/).pop() || "shared file";
+}
+
 function renderFileChosen() {
   const files = state.selectedFiles;
-  $("fileChosen").hidden = files.length === 0;
+  const shared = state.sharedPaths;
+  $("fileChosen").hidden = files.length === 0 && shared.length === 0;
   if (files.length > 0) {
     const total = files.reduce((sum, f) => sum + f.size, 0);
     const names = files.slice(0, 3).map((f) => f.name).join(", ");
     $("chosenName").textContent =
       files.length === 1 ? files[0].name : `${files.length} files: ${names}${files.length > 3 ? " …" : ""}`;
     $("chosenSize").textContent = fmtSize(total);
+  } else if (shared.length > 0) {
+    const names = shared.slice(0, 3).map(baseName).join(", ");
+    $("chosenName").textContent =
+      shared.length === 1 ? baseName(shared[0]) : `${shared.length} shared files: ${names}${shared.length > 3 ? " …" : ""}`;
+    $("chosenSize").textContent = "from share sheet";
   }
   renderStats();
 }
@@ -1115,6 +1200,7 @@ function setupDropzone() {
   };
   $("clearFile").onclick = () => {
     state.selectedFiles = [];
+    state.sharedPaths = [];
     state.relPaths.clear();
     state.selectedFile = null;
     // Reset the input so picking the same file again still fires `change`.
@@ -1304,13 +1390,14 @@ function connectEvents() {
   es.addEventListener("transfer_completed", (e) => { refreshTransfers(); notifyComplete(e.data); });
   es.addEventListener("transfer_failed", refreshTransfers);
   // The server tells us when we missed events (lagged subscriber).
-  es.addEventListener("resync", () => { loadPeers(); loadTransfers(); });
+  es.addEventListener("resync", () => { loadPeers(); loadTransfers(); pollSharedInbox(); });
   es.onopen = () => {
     sseRetryDelay = 5000;
     stopPollingFallback();
     // Pick up anything that changed while we were disconnected.
     loadPeers();
     loadTransfers();
+    pollSharedInbox();
   };
   es.onerror = () => {
     es.close();
@@ -1422,6 +1509,11 @@ function init() {
   loadTransfers();
   connectEvents();
   publishSelection();
+  // Android share intents arrive while the app is already open: pick them up
+  // promptly, and immediately when the window regains focus.
+  pollSharedInbox();
+  setInterval(pollSharedInbox, 3000);
+  window.addEventListener("focus", pollSharedInbox);
 }
 
 document.addEventListener("DOMContentLoaded", init);

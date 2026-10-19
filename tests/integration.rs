@@ -2080,3 +2080,69 @@ async fn trusted_peers_auto_accept_and_expose_pins() {
     assert!(saved.auto_accept_trusted_only);
     assert_eq!(saved.trusted_peers, vec!["trusted-sender".to_string()]);
 }
+
+#[tokio::test]
+async fn shared_inbox_queues_files_and_text_for_the_ui() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, port, _) = instance("bob", dir.path().join("dl")).await;
+    let base = format!("http://127.0.0.1:{port}");
+    let client = reqwest::Client::new();
+
+    let shared = dir.path().join("photo.jpg");
+    std::fs::write(&shared, b"shared bytes").unwrap();
+
+    let resp = client
+        .post(format!("{base}/api/ui/shared-inbox"))
+        .json(&serde_json::json!({
+            "paths": [shared.to_string_lossy(), "/definitely/not/here"],
+            "text": "https://example.com/shared",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    // The UI drains the queue once; unknown paths are dropped.
+    let inbox: serde_json::Value = client
+        .get(format!("{base}/api/ui/shared-inbox"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        inbox["paths"],
+        serde_json::json!([shared.to_string_lossy()])
+    );
+    assert_eq!(inbox["text"], "https://example.com/shared");
+
+    let again: serde_json::Value = client
+        .get(format!("{base}/api/ui/shared-inbox"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(again["paths"], serde_json::json!([]));
+    assert_eq!(again["text"], "");
+
+    // Nothing usable is a client error, and oversized text is refused.
+    let resp = client
+        .post(format!("{base}/api/ui/shared-inbox"))
+        .json(&serde_json::json!({ "paths": [] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let resp = client
+        .post(format!("{base}/api/ui/shared-inbox"))
+        .json(&serde_json::json!({
+            "text": "x".repeat(landrop::protocol::MAX_TEXT_CHARS + 1)
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+}
