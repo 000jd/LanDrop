@@ -166,6 +166,8 @@ pub struct TransferView {
     pub batch_name: Option<String>,
     /// Text/link payload for snippet transfers.
     pub text: Option<String>,
+    /// Six-digit verification PIN (`NNN-NNN`) for this transfer or batch.
+    pub pin: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +318,21 @@ pub fn canonical_hex(s: &str) -> String {
 /// True when the string is a full 64-character hex SHA-256 digest.
 pub fn is_sha256_hex(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Short human-readable verification PIN for an incoming transfer or batch.
+///
+/// Both sides derive it from the same `sender:receiver:key` tuple, where `key`
+/// is the batch id when the file belongs to one, else `filename:size`. Showing
+/// the same `NNN-NNN` on the sender and receiver lets the people involved
+/// confirm they are talking about the same transfer.
+pub fn transfer_pin(sender_id: &str, receiver_id: &str, key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(format!("{sender_id}:{receiver_id}:{key}").as_bytes());
+    let digest = hasher.finalize();
+    let n = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) % 1_000_000;
+    format!("{:03}-{:03}", n / 1000, n % 1000)
 }
 
 #[cfg(test)]
@@ -492,5 +509,20 @@ mod tests {
         assert!(is_sha256_hex(&"a".repeat(64)));
         assert!(!is_sha256_hex("abc"));
         assert!(!is_sha256_hex(&"z".repeat(64)));
+    }
+
+    #[test]
+    fn transfer_pin_is_deterministic_and_padded() {
+        let pin = transfer_pin("sender", "receiver", "batch-1");
+        assert_eq!(pin, transfer_pin("sender", "receiver", "batch-1"));
+        assert_ne!(pin, transfer_pin("sender", "receiver", "batch-2"));
+        assert_ne!(pin, transfer_pin("other", "receiver", "batch-1"));
+        let (left, right) = pin.split_once('-').expect("PIN has a dash");
+        assert_eq!(left.len(), 3, "PIN {pin} pads the first group");
+        assert_eq!(right.len(), 3, "PIN {pin} pads the second group");
+        assert!(pin
+            .chars()
+            .filter(|c| *c != '-')
+            .all(|c| c.is_ascii_digit()));
     }
 }

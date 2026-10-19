@@ -254,11 +254,17 @@ enum Decision {
 /// before asking — otherwise a 40-file folder would mean 40 dialogs. Accepting
 /// releases every waiting member; rejecting rejects them all. Best-effort: files
 /// that disappeared meanwhile are skipped.
-pub fn prompt_batch(mgr: TransferManager, batch_id: String, batch_name: String, sender: String) {
+pub fn prompt_batch(
+    mgr: TransferManager,
+    batch_id: String,
+    batch_name: String,
+    sender: String,
+    pin: String,
+) {
     #[cfg(not(target_os = "linux"))]
     {
         // Mobile has no system dialog: the in-app UI shows the batch.
-        let _ = (mgr, batch_id, batch_name, sender);
+        let _ = (mgr, batch_id, batch_name, sender, pin);
     }
     #[cfg(target_os = "linux")]
     {
@@ -291,7 +297,7 @@ pub fn prompt_batch(mgr: TransferManager, batch_id: String, batch_name: String, 
             }
             let (files, bytes) = mgr.batch_totals(&members).await;
             let body = format!(
-                "{sender} wants to send you \"{batch_name}\" — {files} files ({})",
+                "{sender} wants to send you \"{batch_name}\" — {files} files ({}) [PIN {pin}]",
                 crate::util::human_size(bytes)
             );
             notify("LanDrop — incoming folder", &body);
@@ -329,15 +335,21 @@ pub fn prompt_batch(mgr: TransferManager, batch_id: String, batch_name: String, 
 
 /// Prompt the user to accept or reject an incoming file without opening the
 /// full app. Runs asynchronously so the offer handler can return immediately.
-pub fn prompt_incoming(mgr: TransferManager, id: String, sender: String, filename: String) {
+pub fn prompt_incoming(
+    mgr: TransferManager,
+    id: String,
+    sender: String,
+    filename: String,
+    pin: String,
+) {
     #[cfg(not(target_os = "linux"))]
     {
         // No system dialog on mobile: the in-app UI shows the request.
-        let _ = (mgr, id, sender, filename);
+        let _ = (mgr, id, sender, filename, pin);
     }
     #[cfg(target_os = "linux")]
     {
-        let body = format!("{sender} wants to send you '{filename}'");
+        let body = format!("{sender} wants to send you '{filename}' [PIN {pin}]");
         notify("LanDrop — incoming file", &body);
         tokio::spawn(async move {
             let body_c = body.clone();
@@ -364,7 +376,8 @@ pub fn prompt_incoming(mgr: TransferManager, id: String, sender: String, filenam
                     notify(
                         "LanDrop",
                         &format!(
-                            "{sender} wants to send you '{filename}'. Open LanDrop to accept or reject."
+                            "{sender} wants to send you '{filename}' [PIN {pin}]. \
+                             Open LanDrop to accept or reject."
                         ),
                     );
                 }

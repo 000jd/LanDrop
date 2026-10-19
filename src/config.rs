@@ -26,6 +26,12 @@ pub struct Config {
     pub token: String,
     /// Auto-accept incoming transfers (default: ask the user).
     pub auto_accept: bool,
+    /// Auto-accept only offers from devices in [`Config::trusted_peers`].
+    #[serde(default)]
+    pub auto_accept_trusted_only: bool,
+    /// Device ids trusted to skip the accept prompt.
+    #[serde(default)]
+    pub trusted_peers: Vec<String>,
     /// Ask where to save each incoming file (default: save to `downloads`).
     #[serde(default)]
     pub ask_save_path: bool,
@@ -45,6 +51,8 @@ impl Default for Config {
             downloads: default_download_dir(),
             token: String::new(),
             auto_accept: false,
+            auto_accept_trusted_only: false,
+            trusted_peers: Vec::new(),
             ask_save_path: false,
             start_on_login: false,
             manual_peers: Vec::new(),
@@ -242,6 +250,8 @@ mod tests {
         assert!(!c.name.is_empty());
         assert_eq!(c.port, 8420);
         assert!(!c.auto_accept);
+        assert!(!c.auto_accept_trusted_only);
+        assert!(c.trusted_peers.is_empty());
         assert!(!c.ask_save_path);
         assert!(c.token.is_empty());
     }

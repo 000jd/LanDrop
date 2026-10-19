@@ -249,7 +249,7 @@ function renderPeers() {
 
   // Skip the DOM rebuild when nothing actually changed.
   const key = JSON.stringify(
-    peers.map((p) => [p.id, p.name, p.addr, p.port, p.source, p.reachable])
+    peers.map((p) => [p.id, p.name, p.addr, p.port, p.source, p.reachable, p.trusted])
   );
   if (key !== lastPeersKey) {
     lastPeersKey = key;
@@ -271,21 +271,35 @@ function renderPeers() {
           p.reachable === false
             ? `<span class="src-tag blocked" title="This device announces itself but does not answer on ${esc(p.addr)}:${esc(p.port)}. Check its firewall (allow TCP ${esc(p.port)}) — a rule bound to an old install path stops matching after reinstalling.">unreachable</span>`
             : `<span class="src-tag">${esc(src)}</span>`;
+        const trustPill = p.trusted
+          ? `<button class="trust-pill trusted" type="button" title="Stop trusting this device">trusted</button>`
+          : `<button class="trust-pill" type="button" title="Auto-accept transfers from this device">trust</button>`;
         el.innerHTML = `
           <div class="peer-avatar ${esc(p.source)}">${esc(initial)}</div>
           <div class="p-info">
             <div class="p-name">${esc(p.name)}</div>
             <div class="p-addr">${esc(p.addr)}:${esc(p.port)}</div>
           </div>
+          ${trustPill}
           ${blocked}
         `;
         el.onclick = () => togglePeer(p);
         el.onkeydown = (e) => {
+          // The trust pill is its own control; it must not toggle selection.
+          if (e.target !== el) return;
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
             togglePeer(p);
           }
         };
+        const pill = el.querySelector(".trust-pill");
+        if (pill) {
+          pill.onclick = (e) => {
+            e.stopPropagation();
+            toggleTrust(p);
+          };
+          pill.onkeydown = (e) => e.stopPropagation();
+        }
         list.appendChild(el);
       }
     }
@@ -305,6 +319,28 @@ function togglePeer(p) {
   renderPeers();
   updateSendTargetLabel();
   publishSelection();
+}
+
+/// Mark a device as trusted (or not) so it can skip the accept prompt when
+/// "trusted devices only" auto-accept is enabled. Never changes selection.
+async function toggleTrust(p) {
+  const trusted = !p.trusted;
+  try {
+    await api("/api/peers/trust", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ peer_id: p.id, trusted }),
+    });
+    p.trusted = trusted;
+    lastPeersKey = ""; // rebuild so the pill flips immediately
+    renderPeers();
+    toast(
+      trusted ? `${p.name} is trusted` : `${p.name} is no longer trusted`,
+      "success"
+    );
+  } catch (e) {
+    toast("Trust update failed: " + e.message, "error");
+  }
 }
 
 /// Tell the node which devices are selected. The desktop window cannot read this
@@ -507,6 +543,7 @@ function batchCard(g) {
           <div class="t-meta">
             <span>${fileCount(items.length)} ${incoming ? "from" : "to"} ${esc(items[0].peer_name)}</span>
             <span>${fmtSize(size)}</span>
+            ${items[0].pin ? `<span class="pin-pill" title="Verification PIN">PIN ${esc(items[0].pin)}</span>` : ""}
           </div>
           <div class="t-meta"><span class="batch-names">${esc(names)}${items.length > 3 ? " …" : ""}</span></div>
         </div>
@@ -614,6 +651,7 @@ function transferCard(t) {
             <span>${dir} ${esc(t.peer_name)}</span>
             <span>${fmtSize(t.size)}</span>
             <span>${fmtTime(t.created_at)}</span>
+            ${t.pin ? `<span class="pin-pill" title="Verification PIN">PIN ${esc(t.pin)}</span>` : ""}
           </div>
           ${err}
         </div>
@@ -893,6 +931,7 @@ async function loadSettings() {
     $("setPort").value = s.port;
     $("setDownloads").value = s.downloads;
     $("setAutoAccept").checked = !!s.auto_accept;
+    $("setAutoAcceptTrusted").checked = !!s.auto_accept_trusted_only;
     $("setAskSavePath").checked = !!s.ask_save_path;
     $("setStartOnLogin").checked = !!s.start_on_login;
   } catch (_) {
@@ -921,6 +960,7 @@ async function saveSettings() {
         port: port,
         downloads: $("setDownloads").value,
         auto_accept: $("setAutoAccept").checked,
+        auto_accept_trusted_only: $("setAutoAcceptTrusted").checked,
         ask_save_path: $("setAskSavePath").checked,
         start_on_login: $("setStartOnLogin").checked,
       }),

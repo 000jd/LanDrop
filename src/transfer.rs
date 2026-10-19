@@ -136,6 +136,8 @@ pub struct Transfer {
     pub batch_name: Option<String>,
     /// Snippet payload (no upload follows; accepting completes the transfer).
     pub text: Option<String>,
+    /// Six-digit verification PIN, shared by every file of a batch.
+    pub pin: String,
     /// Bytes streamed so far (for speed / ETA).
     pub bytes_done: u64,
     /// When streaming started (monotonic, for smooth speed/ETA).
@@ -181,6 +183,7 @@ impl Transfer {
             batch_id: offer.batch_id.clone(),
             batch_name: offer.batch_name.clone(),
             text: offer.text.clone(),
+            pin: String::new(),
             bytes_done: 0,
             started_at: None,
             save_dir: None,
@@ -213,6 +216,7 @@ impl Transfer {
             batch_id: offer.batch_id.clone(),
             batch_name: offer.batch_name.clone(),
             text: offer.text.clone(),
+            pin: String::new(),
             bytes_done: 0,
             started_at: None,
             save_dir: None,
@@ -247,6 +251,7 @@ impl Transfer {
             batch_id: self.batch_id.clone(),
             batch_name: self.batch_name.clone(),
             text: self.text.clone(),
+            pin: self.pin.clone(),
             updated_at: self.updated_at,
         }
     }
@@ -317,6 +322,10 @@ pub struct TransferManager {
     pub my_port: Arc<RwLock<u16>>,
     pub download_dir: Arc<RwLock<PathBuf>>,
     pub auto_accept: Arc<RwLock<bool>>,
+    /// Auto-accept only offers from devices listed in `trusted_peers`.
+    pub auto_accept_trusted_only: Arc<RwLock<bool>>,
+    /// Device ids that may skip the accept prompt.
+    pub trusted_peers: Arc<RwLock<Vec<String>>>,
     /// True when accepting an incoming file should ask for a save folder.
     pub ask_save_path: Arc<RwLock<bool>>,
     pub shared_token: Arc<RwLock<String>>,
@@ -344,6 +353,8 @@ impl TransferManager {
             my_port: Arc::new(RwLock::new(8420)),
             download_dir: Arc::new(RwLock::new(PathBuf::new())),
             auto_accept: Arc::new(RwLock::new(false)),
+            auto_accept_trusted_only: Arc::new(RwLock::new(false)),
+            trusted_peers: Arc::new(RwLock::new(Vec::new())),
             ask_save_path: Arc::new(RwLock::new(false)),
             shared_token: Arc::new(RwLock::new(String::new())),
             peers,
@@ -549,6 +560,13 @@ impl TransferManager {
 
         let mut t = Transfer::new_incoming(&offer, peer_addr);
         t.sha256 = sha256;
+        // Every file of a batch shares the batch id (and therefore its PIN).
+        let pin_key = offer
+            .batch_id
+            .clone()
+            .unwrap_or_else(|| format!("{}:{}", t.filename, offer.size));
+        let receiver_id = self.my_id.read().await.clone();
+        t.pin = protocol::transfer_pin(&offer.sender_id, &receiver_id, &pin_key);
         let id = t.id.clone();
         let view = t.view();
         {
@@ -561,7 +579,16 @@ impl TransferManager {
             view.peer_name, view.peer_id, view.filename, offer.size
         );
 
-        if *self.auto_accept.read().await {
+        let auto_accept = *self.auto_accept.read().await;
+        let trusted_accept = !auto_accept
+            && *self.auto_accept_trusted_only.read().await
+            && self
+                .trusted_peers
+                .read()
+                .await
+                .iter()
+                .any(|peer| peer == &offer.sender_id);
+        if auto_accept || trusted_accept {
             if let Err(e) = self.accept(&id, None).await {
                 warn!("auto-accept failed for {id}: {e:#}");
             }
@@ -580,6 +607,7 @@ impl TransferManager {
                                 .clone()
                                 .unwrap_or_else(|| "files".to_string()),
                             view.peer_name.clone(),
+                            view.pin.clone(),
                         );
                     }
                 }
@@ -588,6 +616,7 @@ impl TransferManager {
                     id.clone(),
                     view.peer_name.clone(),
                     view.filename.clone(),
+                    view.pin.clone(),
                 ),
             }
         }

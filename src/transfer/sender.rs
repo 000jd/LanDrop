@@ -129,10 +129,19 @@ pub async fn spawn_send_in(
         text: meta.text.clone(),
     };
 
+    // The receiver derives the same PIN from this sender/receiver/key triple,
+    // so both people can compare it out loud.
+    let pin_key = offer
+        .batch_id
+        .clone()
+        .unwrap_or_else(|| format!("{}:{}", offer.filename, offer.size));
+    let pin = crate::protocol::transfer_pin(&offer.sender_id, &peer.id, &pin_key);
+
     let id = {
         let mut map = mgr.transfers.write().await;
         let mut t = crate::transfer::Transfer::new_outgoing(&peer, &offer);
         let id = t.id.clone();
+        t.pin = pin;
         t.cancel = Some(cancel_tx);
         map.insert(id.clone(), t);
         id

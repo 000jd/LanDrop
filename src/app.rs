@@ -212,6 +212,8 @@ pub async fn start_node(options: NodeOptions) -> Result<RunningNode> {
         .await;
     *transfers.download_dir.write().await = PathBuf::from(&cfg.downloads);
     *transfers.auto_accept.write().await = cfg.auto_accept;
+    *transfers.auto_accept_trusted_only.write().await = cfg.auto_accept_trusted_only;
+    *transfers.trusted_peers.write().await = cfg.trusted_peers.clone();
     *transfers.ask_save_path.write().await = cfg.ask_save_path;
     *transfers.shared_token.write().await = cfg.token.clone();
     transfers

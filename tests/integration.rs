@@ -101,6 +101,32 @@ async fn offer_accepted(
     tid
 }
 
+/// Post an offer without accepting it (auto-accept tests observe the status).
+async fn offer_from(base: &str, sender_id: &str, filename: &str, size: u64) -> String {
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/api/v1/offer"))
+        .json(&Offer {
+            sender_id: sender_id.into(),
+            sender_name: sender_id.into(),
+            filename: filename.into(),
+            size,
+            sha256: None,
+            note: String::new(),
+            rel_path: None,
+            batch_id: None,
+            batch_name: None,
+            text: None,
+        })
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "offer failed: {resp:?}");
+    resp.json::<serde_json::Value>().await.unwrap()["transfer_id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
 /// The one-time upload token minted by `accept`.
 async fn upload_token(state: &AppState, id: &str) -> String {
     state
@@ -1954,4 +1980,103 @@ async fn settings_ask_save_path_round_trip() {
     // The setting is persisted next to the node's config, not the default dir.
     let saved = landrop::config::Config::load_from(&dir.path().join("config.toml")).unwrap();
     assert!(saved.ask_save_path);
+}
+
+#[tokio::test]
+async fn trusted_peers_auto_accept_and_expose_pins() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, port, _) = instance("bob", dir.path().join("dl")).await;
+    let base = format!("http://127.0.0.1:{port}");
+    let client = reqwest::Client::new();
+
+    // A known device in the store, so GET /api/peers can report `trusted`.
+    state.peers.upsert(peer_at("friend-id", 9000)).await;
+
+    let resp = client
+        .post(format!("{base}/api/settings"))
+        .json(&serde_json::json!({
+            "auto_accept_trusted_only": true,
+            "trusted_peers": ["trusted-sender", "  "],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    let settings: serde_json::Value = client
+        .get(format!("{base}/api/settings"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(settings["auto_accept_trusted_only"], true);
+    assert_eq!(
+        settings["trusted_peers"],
+        serde_json::json!(["trusted-sender"]),
+        "blank ids are dropped"
+    );
+
+    // The trust endpoint flips one device without touching the selection.
+    let resp = client
+        .post(format!("{base}/api/peers/trust"))
+        .json(&serde_json::json!({ "peer_id": "friend-id", "trusted": true }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let peers: serde_json::Value = client
+        .get(format!("{base}/api/peers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let friend = peers
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "friend-id")
+        .expect("manual peer is listed");
+    assert_eq!(friend["trusted"], true);
+
+    // A trusted sender is auto-accepted; the transfer exposes its PIN.
+    let trusted = offer_from(&base, "trusted-sender", "auto.bin", 5).await;
+    let t = wait_for_status(&state, &trusted, "accepted").await;
+    assert_eq!(t.pin.len(), 7, "PIN is NNN-NNN: {}", t.pin);
+    assert!(t.pin.contains('-'));
+    assert!(!upload_token(&state, &trusted).await.is_empty());
+
+    // A stranger still waits for the user.
+    let stranger = offer_from(&base, "stranger", "manual.bin", 5).await;
+    wait_for_status(&state, &stranger, "waiting").await;
+
+    // Untrusting is persisted and reflected on the peer card.
+    client
+        .post(format!("{base}/api/peers/trust"))
+        .json(&serde_json::json!({ "peer_id": "friend-id", "trusted": false }))
+        .send()
+        .await
+        .unwrap();
+    let peers: serde_json::Value = client
+        .get(format!("{base}/api/peers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let friend = peers
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "friend-id")
+        .expect("manual peer is listed");
+    assert_eq!(friend["trusted"], false);
+
+    let saved = landrop::config::Config::load_from(&dir.path().join("config.toml")).unwrap();
+    assert!(saved.auto_accept_trusted_only);
+    assert_eq!(saved.trusted_peers, vec!["trusted-sender".to_string()]);
 }

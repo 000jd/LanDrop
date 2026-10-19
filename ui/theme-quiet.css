@@ -466,7 +466,7 @@ html[data-theme="dark"] .icon-moon {
 
 .peer {
   display: grid;
-  grid-template-columns: 34px 1fr auto;
+  grid-template-columns: 34px 1fr auto auto;
   align-items: center;
   gap: 11px;
   padding: 9px 11px;
@@ -538,6 +538,43 @@ html[data-theme="dark"] .icon-moon {
   border-color: var(--danger);
   color: var(--danger);
   cursor: help;
+}
+
+/* Trust is a toggle, not part of the row's selection affordance. */
+.trust-pill {
+  padding: 3px 9px;
+  border: var(--outline) solid var(--line);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 10.5px;
+  font-style: italic;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.trust-pill:hover {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.trust-pill.trusted {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* Six-digit verification PIN on transfer and batch cards. */
+.pin-pill {
+  padding: 2px 8px;
+  border: var(--outline) solid var(--line);
+  border-radius: var(--r-pill);
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
 }
 
 .device-actions {

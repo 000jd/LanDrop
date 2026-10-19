@@ -82,6 +82,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/info", get(handlers::api_info))
         .route("/api/peers", get(handlers::api_peers))
         .route("/api/peers/manual", post(handlers::api_add_manual_peer))
+        .route("/api/peers/trust", post(handlers::api_trust_peer))
         .route("/api/transfers", get(handlers::api_transfers))
         // Streaming uploads opt out of the small global body limit.
         .route(

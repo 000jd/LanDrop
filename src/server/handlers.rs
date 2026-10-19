@@ -35,6 +35,10 @@ const UI_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'u
 
 /// Cap on persisted manual peers.
 const MAX_MANUAL_PEERS: usize = 64;
+/// Cap on device ids trusted to auto-accept.
+const MAX_TRUSTED_PEERS: usize = 256;
+/// Longest accepted peer id, in characters.
+const MAX_PEER_ID_CHARS: usize = 128;
 /// Refuse to stage uploads when free disk space drops below this.
 const MIN_FREE_BYTES: u64 = 256 * 1024 * 1024;
 /// How often the staging writer re-checks free disk space.
@@ -165,6 +169,7 @@ pub async fn api_peers(State(state): State<AppState>) -> Response {
         .map(|ip| ip.to_string())
         .collect();
     let peers = state.peers.list_others(&my_id, my_port, &my_ips).await;
+    let trusted_ids = state.cfg.read().await.trusted_peers.clone();
     // Add the last readiness probe so the UI can flag a device that announces
     // itself but never answers (usually a firewall on that device).
     let mut out = Vec::with_capacity(peers.len());
@@ -178,6 +183,10 @@ pub async fn api_peers(State(state): State<AppState>) -> Response {
                     Some(ok) => serde_json::Value::Bool(ok),
                     None => serde_json::Value::Null,
                 },
+            );
+            obj.insert(
+                "trusted".into(),
+                serde_json::Value::Bool(trusted_ids.iter().any(|id| id == &peer.id)),
             );
         }
         out.push(view);
@@ -239,6 +248,65 @@ pub async fn api_add_manual_peer(
         state.events.send("peer_updated", &peer);
     }
     Json(json!({ "ok": true, "peer": peer })).into_response()
+}
+
+/// Body for `POST /api/peers/trust`.
+#[derive(Debug, Deserialize)]
+pub struct TrustBody {
+    peer_id: String,
+    #[serde(default)]
+    trusted: bool,
+}
+
+/// Add or remove a device from the trusted list (machine-local).
+///
+/// Trusted devices are the only ones auto-accepted when
+/// `auto_accept_trusted_only` is enabled.
+pub async fn api_trust_peer(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(body): Json<TrustBody>,
+) -> Response {
+    if !is_local_peer(&addr) {
+        return err(
+            StatusCode::FORBIDDEN,
+            "trusting devices is only available from this machine",
+        );
+    }
+    let peer_id = crate::protocol::truncate_chars(body.peer_id.trim(), MAX_PEER_ID_CHARS);
+    if peer_id.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "peer_id is required");
+    }
+    let list = {
+        let mut cfg = state.cfg.write().await;
+        if body.trusted {
+            if !cfg.trusted_peers.iter().any(|id| id == &peer_id) {
+                if cfg.trusted_peers.len() >= MAX_TRUSTED_PEERS {
+                    return err(
+                        StatusCode::FORBIDDEN,
+                        format!("too many trusted peers (max {MAX_TRUSTED_PEERS})"),
+                    );
+                }
+                cfg.trusted_peers.push(peer_id.clone());
+            }
+        } else {
+            cfg.trusted_peers.retain(|id| id != &peer_id);
+        }
+        let list = cfg.trusted_peers.clone();
+        state.disk_cfg.write().await.trusted_peers = list.clone();
+        list
+    };
+    // The offer handler consults this live copy, not the config lock.
+    *state.transfers.trusted_peers.write().await = list;
+    if let Err(e) = persist_config(&state).await {
+        tracing::warn!("failed to persist trusted peers: {e}");
+    }
+    Json(json!({
+        "ok": true,
+        "peer_id": peer_id,
+        "trusted": body.trusted,
+    }))
+    .into_response()
 }
 
 pub async fn api_transfers(State(state): State<AppState>) -> Response {
@@ -624,6 +692,8 @@ pub struct SettingsBody {
     port: Option<u16>,
     downloads: Option<String>,
     auto_accept: Option<bool>,
+    auto_accept_trusted_only: Option<bool>,
+    trusted_peers: Option<Vec<String>>,
     ask_save_path: Option<bool>,
     start_on_login: Option<bool>,
 }
@@ -637,6 +707,8 @@ pub async fn api_get_settings(State(state): State<AppState>) -> Response {
         "port": port,
         "downloads": cfg.downloads,
         "auto_accept": cfg.auto_accept,
+        "auto_accept_trusted_only": cfg.auto_accept_trusted_only,
+        "trusted_peers": cfg.trusted_peers,
         "ask_save_path": cfg.ask_save_path,
         "start_on_login": cfg.start_on_login || crate::autostart::is_enabled(),
     }))
@@ -657,6 +729,8 @@ pub async fn api_save_settings(
     let new_name;
     let new_downloads;
     let new_auto_accept;
+    let new_auto_accept_trusted_only;
+    let new_trusted_peers;
     let new_ask_save_path;
     {
         let mut cfg = state.cfg.write().await;
@@ -680,6 +754,12 @@ pub async fn api_save_settings(
         if let Some(a) = body.auto_accept {
             cfg.auto_accept = a;
         }
+        if let Some(a) = body.auto_accept_trusted_only {
+            cfg.auto_accept_trusted_only = a;
+        }
+        if let Some(peers) = &body.trusted_peers {
+            cfg.trusted_peers = sanitize_peer_ids(peers);
+        }
         if let Some(a) = body.ask_save_path {
             cfg.ask_save_path = a;
         }
@@ -689,6 +769,8 @@ pub async fn api_save_settings(
         new_name = cfg.name.clone();
         new_downloads = cfg.downloads.clone();
         new_auto_accept = cfg.auto_accept;
+        new_auto_accept_trusted_only = cfg.auto_accept_trusted_only;
+        new_trusted_peers = cfg.trusted_peers.clone();
         new_ask_save_path = cfg.ask_save_path;
     }
     // Mirror only the fields this request actually asked for into the on-disk
@@ -713,6 +795,12 @@ pub async fn api_save_settings(
         if let Some(a) = body.auto_accept {
             disk.auto_accept = a;
         }
+        if let Some(a) = body.auto_accept_trusted_only {
+            disk.auto_accept_trusted_only = a;
+        }
+        if body.trusted_peers.is_some() {
+            disk.trusted_peers = cfg.trusted_peers.clone();
+        }
         if let Some(a) = body.ask_save_path {
             disk.ask_save_path = a;
         }
@@ -725,6 +813,8 @@ pub async fn api_save_settings(
     *state.transfers.my_name.write().await = new_name;
     *state.transfers.download_dir.write().await = PathBuf::from(new_downloads);
     *state.transfers.auto_accept.write().await = new_auto_accept;
+    *state.transfers.auto_accept_trusted_only.write().await = new_auto_accept_trusted_only;
+    *state.transfers.trusted_peers.write().await = new_trusted_peers;
     *state.transfers.ask_save_path.write().await = new_ask_save_path;
     if let Some(on) = body.start_on_login {
         if let Err(e) = crate::autostart::set_enabled(on) {
@@ -1908,6 +1998,21 @@ fn collect_sendable(roots: &[PathBuf], limit: usize) -> (Vec<(PathBuf, Option<St
         }
     }
     (out, skipped)
+}
+
+/// Trim, de-duplicate and bound a trusted-peer list from the settings body.
+fn sanitize_peer_ids(ids: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in ids {
+        let id = crate::protocol::truncate_chars(raw.trim(), MAX_PEER_ID_CHARS);
+        if !id.is_empty() && !out.contains(&id) {
+            out.push(id);
+            if out.len() >= MAX_TRUSTED_PEERS {
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// Persist the current config next to the node's config file (honours a
