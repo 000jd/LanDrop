@@ -392,7 +392,24 @@ impl TransferManager {
         let mut cancels: Vec<watch::Sender<bool>> = Vec::new();
         {
             let mut map = self.transfers.write().await;
+            // A batch streams through a few slots, so files queued behind the
+            // semaphore can sit in `Accepted` for a long time. While any member
+            // of the batch is actually streaming, its siblings are alive, not
+            // stale — refresh them instead of failing them.
+            let active_batches: std::collections::HashSet<String> = map
+                .values()
+                .filter(|t| t.status == Status::Transferring)
+                .filter_map(|t| t.batch_id.clone())
+                .collect();
             for (id, t) in map.iter_mut() {
+                if t.status == Status::Accepted
+                    && t.batch_id
+                        .as_deref()
+                        .is_some_and(|batch| active_batches.contains(batch))
+                {
+                    t.updated_at = now;
+                    continue;
+                }
                 let reason = match t.status {
                     Status::Waiting if now - t.created_at > OFFER_TIMEOUT.as_secs() as i64 => {
                         Some(format!(
@@ -692,6 +709,60 @@ mod tests {
             batch_id: None,
             batch_name: None,
         }
+    }
+
+    #[tokio::test]
+    async fn queued_batch_members_survive_while_a_sibling_streams() {
+        let mgr = TransferManager::new(std::sync::Arc::new(crate::peers::PeerStore::new()));
+        let offer = |name: &str| crate::protocol::Offer {
+            sender_id: "s".into(),
+            sender_name: "n".into(),
+            filename: name.into(),
+            size: 10,
+            sha256: None,
+            note: String::new(),
+            rel_path: None,
+            batch_id: Some("batch-1".into()),
+            batch_name: Some("folder".into()),
+        };
+
+        let mut queued = Transfer::new_incoming(&offer("a.bin"), "10.0.0.2".into());
+        queued.status = Status::Accepted;
+        // Older than the accepted-upload timeout.
+        queued.updated_at = now_secs() - (OFFER_TIMEOUT.as_secs() as i64 + 60);
+        let mut streaming = Transfer::new_incoming(&offer("b.bin"), "10.0.0.2".into());
+        streaming.status = Status::Transferring;
+        streaming.updated_at = now_secs();
+        let (queued_id, streaming_id) = (queued.id.clone(), streaming.id.clone());
+        {
+            let mut map = mgr.transfers.write().await;
+            map.insert(queued_id.clone(), queued);
+            map.insert(streaming_id.clone(), streaming);
+        }
+
+        mgr.expire_stale().await;
+        assert_eq!(
+            mgr.get(&queued_id).await.unwrap().status,
+            "accepted",
+            "a file queued behind the upload slots must not time out while its batch streams"
+        );
+
+        // The refresh above gave the queued file a fresh grace window, so it is
+        // not expired immediately when its sibling finishes.
+        mgr.expire_stale().await;
+        assert_eq!(mgr.get(&queued_id).await.unwrap().status, "accepted");
+        // Once the batch is idle and that grace window has passed, it expires.
+        mgr.with_transfer(&streaming_id, |t| {
+            t.status = Status::Completed;
+            t.updated_at = now_secs();
+        })
+        .await;
+        mgr.with_transfer(&queued_id, |t| {
+            t.updated_at = now_secs() - (OFFER_TIMEOUT.as_secs() as i64 + 60);
+        })
+        .await;
+        mgr.expire_stale().await;
+        assert_eq!(mgr.get(&queued_id).await.unwrap().status, "failed");
     }
 
     #[tokio::test]

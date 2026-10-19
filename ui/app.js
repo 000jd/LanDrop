@@ -565,15 +565,14 @@ async function rejectBatch(id) {
 }
 
 async function cancelBatch(id) {
-  const active = batchMembers(id, ["preparing", "waiting", "accepted", "transferring"]);
-  for (const t of active) {
-    try {
-      await api(`/api/transfers/${t.id}/cancel`, { method: "POST" });
-    } catch {
-      // Best effort.
-    }
+  const active = batchMembers(id, ["preparing", "waiting", "accepted", "transferring"]).length;
+  try {
+    // One request for the batch, not one per file.
+    await api(`/api/batches/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+    toast(active > 1 ? `Cancelled ${fileCount(active)}` : "Cancelled");
+  } catch (e) {
+    toast("Cancel failed: " + e.message, "error");
   }
-  toast(active.length === 1 ? "Cancelled" : `Cancelled ${active.length} files`);
   await loadTransfers();
 }
 

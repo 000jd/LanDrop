@@ -1122,6 +1122,41 @@ pub async fn api_accept_batch(
     Json(json!({ "accepted": accepted, "errors": errors })).into_response()
 }
 
+/// Cancel every active member of a batch in one request.
+///
+/// Same policy as cancelling a single transfer.
+pub async fn api_cancel_batch(
+    State(state): State<AppState>,
+    Path(batch_id): Path<String>,
+) -> Response {
+    let ids: Vec<String> = {
+        let map = state.transfers.list().await;
+        map.into_iter()
+            .filter(|t| t.batch_id.as_deref() == Some(batch_id.as_str()))
+            .filter(|t| {
+                matches!(
+                    t.status.as_str(),
+                    "preparing" | "waiting" | "accepted" | "transferring"
+                )
+            })
+            .map(|t| t.id)
+            .collect()
+    };
+    if ids.is_empty() {
+        return err(
+            StatusCode::NOT_FOUND,
+            format!("no active transfers in batch {batch_id}"),
+        );
+    }
+    let mut cancelled = 0usize;
+    for id in &ids {
+        if state.transfers.cancel(id).await {
+            cancelled += 1;
+        }
+    }
+    Json(json!({ "cancelled": cancelled })).into_response()
+}
+
 /// Reject every waiting member of a batch.
 pub async fn api_reject_batch(
     State(state): State<AppState>,

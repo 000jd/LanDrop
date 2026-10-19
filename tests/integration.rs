@@ -568,6 +568,23 @@ async fn one_upload_reaches_every_selected_device() {
             payload
         );
     }
+
+    // The base staged file is removed after fan-out, and each per-device link is
+    // removed when its transfer ends: nothing may linger in outbox/.
+    let outbox = dir_s.path().join("outbox");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let empty = !outbox.exists() || dir_names(&outbox).is_empty();
+        if empty {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "outbox not cleaned up: {:?}",
+            dir_names(&outbox)
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 #[tokio::test]
@@ -606,6 +623,39 @@ async fn batch_accept_releases_every_member_in_one_request() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["accepted"], 3, "{body}");
     assert!(state.transfers.waiting_in_batch("batch-9").await.is_empty());
+
+    // Cancelling a batch is one request too.
+    for name in ["d.txt", "e.txt"] {
+        let resp = client
+            .post(format!("{base}/api/v1/offer"))
+            .json(&serde_json::json!({
+                "sender_id": "tester",
+                "sender_name": "tester",
+                "filename": name,
+                "size": 3,
+                "sha256": null,
+                "note": "",
+                "batch_id": "batch-10",
+                "batch_name": "other folder",
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success());
+    }
+    let resp = client
+        .post(format!("{base}/api/batches/batch-10/cancel"))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "batch cancel failed: {resp:?}");
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["cancelled"], 2, "{body}");
+    assert!(state
+        .transfers
+        .waiting_in_batch("batch-10")
+        .await
+        .is_empty());
 }
 
 #[tokio::test]
