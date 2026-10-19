@@ -212,8 +212,10 @@ download_asset() {
 }
 
 verify_checksum() {
-  local file="$1" base expected actual
-  base="$(basename "$file")"
+  local file="$1" base="${2:-}" expected actual
+  if [ -z "$base" ]; then
+    base="$(basename "$file")"
+  fi
   expected="$(
     awk -v target="$base" '{
       name = $2
@@ -265,7 +267,7 @@ download_optional() {
   asset_exists "$asset" || return 1
   fetch_sums
   download_asset "$asset" "$dest"
-  verify_checksum "$dest"
+  verify_checksum "$dest" "$asset"
 }
 
 install_desktop() {
