@@ -150,6 +150,14 @@ pub struct Transfer {
     pub text: Option<String>,
     /// Six-digit verification PIN, shared by every file of a batch.
     pub pin: String,
+    /// Sender's ephemeral X25519 key pair until the receiver's reply arrives.
+    pub dh_keypair: Option<crate::crypto::KeyPair>,
+    /// Established per-transfer session for encrypted payloads.
+    pub session: Option<crate::crypto::SessionKey>,
+    /// Receiver's ephemeral public key (hex), echoed in the offer response.
+    pub dh_public: Option<String>,
+    /// True when the payload is encrypted (X25519 + ChaCha20).
+    pub encrypted: bool,
     /// Bytes streamed so far (for speed / ETA).
     pub bytes_done: u64,
     /// When streaming started (monotonic, for smooth speed/ETA).
@@ -196,6 +204,10 @@ impl Transfer {
             batch_name: offer.batch_name.clone(),
             text: offer.text.clone(),
             pin: String::new(),
+            dh_keypair: None,
+            session: None,
+            dh_public: None,
+            encrypted: false,
             bytes_done: 0,
             started_at: None,
             save_dir: None,
@@ -229,6 +241,10 @@ impl Transfer {
             batch_name: offer.batch_name.clone(),
             text: offer.text.clone(),
             pin: String::new(),
+            dh_keypair: None,
+            session: None,
+            dh_public: None,
+            encrypted: false,
             bytes_done: 0,
             started_at: None,
             save_dir: None,
@@ -264,6 +280,7 @@ impl Transfer {
             batch_name: self.batch_name.clone(),
             text: self.text.clone(),
             pin: self.pin.clone(),
+            encrypted: self.encrypted,
             updated_at: self.updated_at,
         }
     }
@@ -315,6 +332,8 @@ pub struct HistoryEntry {
     pub batch_name: Option<String>,
     pub text: Option<String>,
     pub pin: String,
+    #[serde(default)]
+    pub encrypted: bool,
     pub bytes_done: u64,
 }
 
@@ -344,6 +363,7 @@ impl HistoryEntry {
             batch_name: t.batch_name.clone(),
             text: t.text.clone(),
             pin: t.pin.clone(),
+            encrypted: t.encrypted,
             bytes_done: t.bytes_done,
         }
     }
@@ -370,6 +390,10 @@ impl HistoryEntry {
             batch_name: self.batch_name,
             text: self.text,
             pin: self.pin,
+            encrypted: self.encrypted,
+            dh_keypair: None,
+            session: None,
+            dh_public: None,
             bytes_done: self.bytes_done,
             started_at: None,
             save_dir: None,
@@ -379,6 +403,14 @@ impl HistoryEntry {
             cancel: None,
         }
     }
+}
+
+/// Reply to an offer: the new transfer id plus the receiver's ephemeral key
+/// when the sender asked for encryption.
+#[derive(Debug, Clone)]
+pub struct OfferReply {
+    pub transfer_id: String,
+    pub dh_pub: Option<String>,
 }
 
 /// Result of claiming the single upload slot for a transfer.
@@ -780,7 +812,11 @@ impl TransferManager {
 
     /// Handle an incoming offer: validate it, create a pending transfer and
     /// either auto-accept or notify the user.
-    pub async fn handle_offer(&self, offer: Offer, peer_addr: String) -> Result<String> {
+    ///
+    /// When the offer carries `dh_pub`, a fresh receiver key pair is generated
+    /// immediately, the session is bound to this transfer id, and the PIN
+    /// becomes the cryptographic SAS instead of the legacy identifier hash.
+    pub async fn handle_offer(&self, offer: Offer, peer_addr: String) -> Result<OfferReply> {
         if offer.sender_id.trim().is_empty() {
             bail!("offer has no sender id");
         }
@@ -803,9 +839,25 @@ impl TransferManager {
             .batch_id
             .clone()
             .unwrap_or_else(|| format!("{}:{}", t.filename, offer.size));
-        let receiver_id = self.my_id.read().await.clone();
-        t.pin = protocol::transfer_pin(&offer.sender_id, &receiver_id, &pin_key);
         let id = t.id.clone();
+        let receiver_id = self.my_id.read().await.clone();
+        let dh_pub = match offer.dh_pub.as_deref() {
+            Some(peer_public) => {
+                let keypair = crate::crypto::KeyPair::generate()
+                    .ok_or_else(|| anyhow!("cannot generate an ephemeral key"))?;
+                let session = crate::crypto::derive_session(&keypair.secret, peer_public, &id)
+                    .ok_or_else(|| anyhow!("offer carries an invalid dh_pub"))?;
+                t.pin = session.sas_pin(&offer.sender_id, &receiver_id, &pin_key);
+                t.session = Some(session);
+                t.dh_public = Some(keypair.public_hex.clone());
+                t.encrypted = true;
+                Some(keypair.public_hex)
+            }
+            None => {
+                t.pin = protocol::transfer_pin(&offer.sender_id, &receiver_id, &pin_key);
+                None
+            }
+        };
         let view = t.view();
         {
             let mut map = self.transfers.write().await;
@@ -858,7 +910,28 @@ impl TransferManager {
                 ),
             }
         }
-        Ok(id)
+        Ok(OfferReply {
+            transfer_id: id,
+            dh_pub,
+        })
+    }
+
+    /// The receiver's ephemeral public key for an offer (hex), if encrypted.
+    pub async fn dh_public(&self, id: &str) -> Option<String> {
+        self.transfers
+            .read()
+            .await
+            .get(id)
+            .and_then(|t| t.dh_public.clone())
+    }
+
+    /// The established payload session for a transfer, if encrypted.
+    pub async fn session(&self, id: &str) -> Option<crate::crypto::SessionKey> {
+        self.transfers
+            .read()
+            .await
+            .get(id)
+            .and_then(|t| t.session.clone())
     }
 
     /// True the first time a prompt is scheduled for `batch_id`.
@@ -1129,6 +1202,7 @@ mod tests {
             batch_id: None,
             batch_name: None,
             text: None,
+            dh_pub: None,
         }
     }
 
@@ -1146,6 +1220,7 @@ mod tests {
             batch_id: Some("batch-1".into()),
             batch_name: Some("folder".into()),
             text: None,
+            dh_pub: None,
         };
 
         let mut queued = Transfer::new_incoming(&offer("a.bin"), "10.0.0.2".into());

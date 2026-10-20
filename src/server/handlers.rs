@@ -22,7 +22,10 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
 use crate::peers::{parse_peer_addr_with, Peer};
-use crate::protocol::{AcceptInfo, Offer, TOKEN_HEADER, UPLOAD_OFFSET_HEADER, UPLOAD_TOKEN_HEADER};
+use crate::protocol::{
+    AcceptInfo, Offer, ENCRYPTED_HEADER, ENCRYPTION_CHACHA20_V1, TOKEN_HEADER,
+    UPLOAD_OFFSET_HEADER, UPLOAD_TOKEN_HEADER,
+};
 use crate::server::AppState;
 use crate::transfer::sender::spawn_send_in;
 use crate::transfer::UploadStart;
@@ -904,7 +907,19 @@ pub async fn v1_offer(
     // Peer address for logging/identification.
     let peer_addr = addr.ip().to_string();
     match state.transfers.handle_offer(offer, peer_addr).await {
-        Ok(id) => Json(json!({ "transfer_id": id, "status": "pending" })).into_response(),
+        Ok(reply) => {
+            // The sender binds the session to the *receiver's* transfer id, so
+            // it needs our public key (and the id used for the SAS PIN). Both
+            // are public information already announced on the LAN.
+            let receiver_id = state.transfers.my_id.read().await.clone();
+            Json(json!({
+                "transfer_id": reply.transfer_id,
+                "status": "pending",
+                "receiver_id": receiver_id,
+                "dh_pub": reply.dh_pub,
+            }))
+            .into_response()
+        }
         Err(e) => err(StatusCode::BAD_REQUEST, e.to_string()),
     }
 }
@@ -918,9 +933,11 @@ pub async fn v1_offer_status(
     if let Err(e) = check_shared_token(&state, &headers).await {
         return err(e.0, e.1);
     }
+    let dh_pub = state.transfers.dh_public(&id).await;
+    let receiver_id = state.transfers.my_id.read().await.clone();
     match state.transfers.offer_status(&id).await {
         Some((status, url, token)) => {
-            let body = if status == "accepted" {
+            let mut body = if status == "accepted" {
                 serde_json::to_value(AcceptInfo {
                     status,
                     upload_url: url.unwrap_or_default(),
@@ -930,6 +947,15 @@ pub async fn v1_offer_status(
             } else {
                 json!({ "status": status })
             };
+            if let Some(object) = body.as_object_mut() {
+                object.insert(
+                    "dh_pub".into(),
+                    dh_pub
+                        .map(serde_json::Value::String)
+                        .unwrap_or(serde_json::Value::Null),
+                );
+                object.insert("receiver_id".into(), serde_json::Value::String(receiver_id));
+            }
             Json(body).into_response()
         }
         None => err(StatusCode::NOT_FOUND, "unknown transfer"),
@@ -1013,6 +1039,21 @@ pub async fn v1_upload(
         UploadStart::NotUploadable => {
             return err(StatusCode::CONFLICT, "transfer is not ready for an upload")
         }
+    }
+    // An encrypted transfer must announce the cipher it uses. This catches a
+    // sender that negotiated encryption but then forgot to encrypt the body
+    // before the receiver burns disk I/O on it.
+    if state.transfers.session(&id).await.is_some()
+        && headers
+            .get(ENCRYPTED_HEADER)
+            .and_then(|value| value.to_str().ok())
+            != Some(ENCRYPTION_CHACHA20_V1)
+    {
+        state.transfers.reset_uploading(&id).await;
+        return err(
+            StatusCode::BAD_REQUEST,
+            format!("encrypted transfer requires {ENCRYPTED_HEADER}: {ENCRYPTION_CHACHA20_V1}"),
+        );
     }
     // A resume must start exactly where the partial file ends.
     if offset > 0 {

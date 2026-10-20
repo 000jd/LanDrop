@@ -75,7 +75,7 @@ where
 {
     // Snapshot expectations up front (lock order: download_dir, then transfers).
     let default_dir = mgr.download_dir.read().await.clone();
-    let (filename, expected_size, expected_sha, dest_dir, part_path, previous_status) = {
+    let (filename, expected_size, expected_sha, dest_dir, part_path, previous_status, session) = {
         let map = mgr.transfers.read().await;
         let t = map
             .get(id)
@@ -106,6 +106,7 @@ where
             dest_dir,
             part_path,
             t.status,
+            t.session.clone(),
         )
     };
 
@@ -241,11 +242,17 @@ where
             if n == 0 {
                 break;
             }
+            let chunk_offset = done;
             done += n as u64;
             // Early abort: never write more than the offer declared. This also
             // covers `size: 0` offers, which must yield an empty file only.
             if done > expected_size {
                 bail!("size mismatch: expected {expected_size} bytes");
+            }
+            // Decrypt at the plaintext offset: the first resumed chunk starts
+            // exactly where the partial file ends, so retries stay in sync.
+            if let Some(session) = &session {
+                session.apply_keystream(chunk_offset, &mut buf[..n]);
             }
             AsyncWriteExt::write_all(&mut file, &buf[..n])
                 .await

@@ -638,6 +638,7 @@ function batchCard(g) {
             <span>${fileCount(items.length)} ${incoming ? "from" : "to"} ${esc(items[0].peer_name)}</span>
             <span>${fmtSize(size)}</span>
             ${items[0].pin ? `<span class="pin-pill" title="Verification PIN">PIN ${esc(items[0].pin)}</span>` : ""}
+            ${items[0].encrypted ? `<span class="enc-pill" title="Payload encrypted with X25519 + ChaCha20">encrypted</span>` : ""}
           </div>
           <div class="t-meta"><span class="batch-names">${esc(names)}${items.length > 3 ? " …" : ""}</span></div>
         </div>
@@ -746,6 +747,7 @@ function transferCard(t) {
             <span>${fmtSize(t.size)}</span>
             <span>${fmtTime(t.created_at)}</span>
             ${t.pin ? `<span class="pin-pill" title="Verification PIN">PIN ${esc(t.pin)}</span>` : ""}
+            ${t.encrypted ? `<span class="enc-pill" title="Payload encrypted with X25519 + ChaCha20">encrypted</span>` : ""}
           </div>
           ${err}
         </div>

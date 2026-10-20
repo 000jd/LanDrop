@@ -8,7 +8,10 @@ use std::sync::Arc;
 
 use landrop::config::Config;
 use landrop::peers::{Peer, PeerStore};
-use landrop::protocol::{Offer, TransferView, UPLOAD_OFFSET_HEADER, UPLOAD_TOKEN_HEADER};
+use landrop::protocol::{
+    Offer, TransferView, ENCRYPTED_HEADER, ENCRYPTION_CHACHA20_V1, UPLOAD_OFFSET_HEADER,
+    UPLOAD_TOKEN_HEADER,
+};
 use landrop::server::{self, AppState};
 use landrop::transfer::TransferManager;
 use sha2::{Digest, Sha256};
@@ -88,6 +91,7 @@ async fn offer_accepted(
             batch_id: None,
             batch_name: None,
             text: None,
+            dh_pub: None,
         })
         .send()
         .await
@@ -116,6 +120,7 @@ async fn offer_from(base: &str, sender_id: &str, filename: &str, size: u64) -> S
             batch_id: None,
             batch_name: None,
             text: None,
+            dh_pub: None,
         })
         .send()
         .await
@@ -765,6 +770,13 @@ async fn text_snippets_need_consent_and_write_no_file() {
     })
     .await
     .unwrap();
+    // This test checks the offer/UI consent flow, not desktop notifications:
+    // keep the blocking system dialog out of the test runtime.
+    node_b
+        .state
+        .transfers
+        .interactive_prompts
+        .store(false, std::sync::atomic::Ordering::Relaxed);
     let client = reqwest::Client::new();
     let target = format!("127.0.0.1:{}", node_b.addr.port());
 
@@ -1181,6 +1193,7 @@ async fn upload_without_accept_is_rejected_by_receiver() {
             batch_id: None,
             batch_name: None,
             text: None,
+            dh_pub: None,
         })
         .send()
         .await
@@ -1761,6 +1774,7 @@ async fn offer_with_bad_sha256_is_rejected() {
             batch_id: None,
             batch_name: None,
             text: None,
+            dh_pub: None,
         })
         .send()
         .await
@@ -1832,6 +1846,7 @@ async fn offer_pending(base: &str, filename: &str, size: u64) -> String {
             batch_id: None,
             batch_name: None,
             text: None,
+            dh_pub: None,
         })
         .send()
         .await
@@ -2343,6 +2358,12 @@ async fn transfer_history_survives_a_restart_and_clear_wipes_the_file() {
     };
 
     let node = landrop::app::start_node(node_options()).await.unwrap();
+    // The offers below are accepted immediately; no system dialog should run
+    // (and block the test runtime until its timeout) in the background.
+    node.state
+        .transfers
+        .interactive_prompts
+        .store(false, std::sync::atomic::Ordering::Relaxed);
     let base = node.local_url();
     let client = reqwest::Client::new();
 
@@ -2374,6 +2395,7 @@ async fn transfer_history_survives_a_restart_and_clear_wipes_the_file() {
             batch_id: None,
             batch_name: None,
             text: Some("hello snippet".into()),
+            dh_pub: None,
         })
         .send()
         .await
@@ -2509,4 +2531,202 @@ async fn clear_history_keeps_active_transfers_and_saved_files() {
 
     // Clearing history never deletes files that were already received.
     assert!(std::path::Path::new(&saved).exists());
+}
+
+#[tokio::test]
+async fn encrypted_transfer_handshake_pin_and_resume() {
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+    let (state_a, _port_a, _) = instance("alice", dir_a.path().join("dl")).await;
+    let (state_b, port_b, _) = instance("bob", dir_b.path().join("dl")).await;
+    let base_b = format!("http://127.0.0.1:{port_b}");
+    let client = reqwest::Client::new();
+
+    // --- Full sender path: offer handshake, encrypted upload, matching PINs.
+    *state_b.transfers.auto_accept.write().await = true;
+    let payload: Vec<u8> = (0..300_000u32)
+        .map(|i| (i.wrapping_mul(31) % 251) as u8)
+        .collect();
+    let src = dir_a.path().join("secure.bin");
+    std::fs::write(&src, &payload).unwrap();
+    let sha = sha256_of(&src);
+    let sender_id = landrop::transfer::sender::spawn_send(
+        &state_a.transfers,
+        peer_at("bob-id", port_b),
+        "secure.bin".into(),
+        payload.len() as u64,
+        Some(sha.clone()),
+        src,
+    )
+    .await
+    .unwrap();
+
+    let received = wait_for_incoming(&state_b, "completed").await;
+    wait_for_status(&state_a, &sender_id, "completed").await;
+    let out = state_a.transfers.get(&sender_id).await.unwrap();
+    let inc = wait_for_status(&state_b, &received.id, "completed").await;
+    assert!(
+        out.encrypted,
+        "sender marks the transfer encrypted: {out:?}"
+    );
+    assert!(
+        inc.encrypted,
+        "receiver marks the transfer encrypted: {inc:?}"
+    );
+    assert_eq!(out.pin, inc.pin, "both screens show the same SAS PIN");
+    assert_eq!(out.pin.len(), 7, "PIN is NNN-NNN: {}", out.pin);
+    let saved = inc.saved_path.expect("saved file path");
+    assert_eq!(sha256_of(std::path::Path::new(&saved)), sha);
+    assert_eq!(std::fs::read(&saved).unwrap(), payload);
+
+    // --- Manual wire path: encrypt, drop mid-stream, resume from the offset.
+    *state_b.transfers.auto_accept.write().await = false;
+    let sender_kp = landrop::crypto::KeyPair::generate().unwrap();
+    let payload: Vec<u8> = (0..200_000u32)
+        .map(|i| (i.wrapping_mul(17) % 251) as u8)
+        .collect();
+    let mut hasher = Sha256::new();
+    hasher.update(&payload);
+    let sha = format!("{:x}", hasher.finalize());
+    let offer_reply: serde_json::Value = client
+        .post(format!("{base_b}/api/v1/offer"))
+        .json(&Offer {
+            sender_id: "resume-sender".into(),
+            sender_name: "resume-sender".into(),
+            filename: "resume-enc.bin".into(),
+            size: payload.len() as u64,
+            sha256: Some(sha),
+            note: String::new(),
+            rel_path: None,
+            batch_id: None,
+            batch_name: None,
+            text: None,
+            dh_pub: Some(sender_kp.public_hex.clone()),
+        })
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let tid = offer_reply["transfer_id"].as_str().unwrap().to_string();
+    let receiver_pub = offer_reply["dh_pub"].as_str().expect("receiver dh_pub");
+    let receiver_id = offer_reply["receiver_id"].as_str().expect("receiver id");
+    let session = landrop::crypto::derive_session(&sender_kp.secret, receiver_pub, &tid).unwrap();
+    let expected_pin = session.sas_pin(
+        "resume-sender",
+        receiver_id,
+        &format!("resume-enc.bin:{}", payload.len()),
+    );
+    state_b.transfers.accept(&tid, None).await.unwrap();
+    let view = state_b.transfers.get(&tid).await.unwrap();
+    assert!(view.encrypted);
+    assert_eq!(view.pin, expected_pin, "receiver shows the SAS PIN");
+
+    let token = upload_token(&state_b, &tid).await;
+    let url = format!("{base_b}/api/v1/upload/{tid}");
+    let part = dir_b
+        .path()
+        .join("dl")
+        .join(format!(".resume-enc.bin.part-{tid}"));
+    let first_len = 64 * 1024usize;
+    let mut first = payload[..first_len].to_vec();
+    session.apply_keystream(0, &mut first);
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(4);
+    let attempt = {
+        let client = client.clone();
+        let url = url.clone();
+        let token = token.clone();
+        tokio::spawn(async move {
+            let body = reqwest::Body::wrap_stream(tokio_stream::wrappers::ReceiverStream::new(rx));
+            client
+                .post(&url)
+                .header(UPLOAD_TOKEN_HEADER, &token)
+                .header(ENCRYPTED_HEADER, ENCRYPTION_CHACHA20_V1)
+                .header("Content-Type", "application/octet-stream")
+                .body(body)
+                .send()
+                .await
+        })
+    };
+    tx.send(Ok(bytes::Bytes::from(first))).await.unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let len = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+        if len == first_len as u64 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "receiver never wrote the decrypted first chunk (part len {len})"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    tx.send(Err(std::io::Error::new(
+        std::io::ErrorKind::ConnectionReset,
+        "simulated network failure",
+    )))
+    .await
+    .unwrap();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), attempt).await;
+
+    assert_eq!(
+        state_b.transfers.upload_offset(&tid).await,
+        Some(first_len as u64),
+        "plaintext bytes on disk are the resume offset"
+    );
+    let head = client
+        .head(&url)
+        .header(UPLOAD_TOKEN_HEADER, &token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(head.status(), reqwest::StatusCode::OK);
+    let offset: u64 = head
+        .headers()
+        .get(UPLOAD_OFFSET_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok())
+        .expect("HEAD carries the resume offset");
+    assert_eq!(offset, first_len as u64);
+
+    let mut rest = payload[first_len..].to_vec();
+    session.apply_keystream(first_len as u64, &mut rest);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let resp = loop {
+        let resp = client
+            .post(&url)
+            .header(UPLOAD_TOKEN_HEADER, &token)
+            .header(ENCRYPTED_HEADER, ENCRYPTION_CHACHA20_V1)
+            .header(UPLOAD_OFFSET_HEADER, offset.to_string())
+            .header("Content-Type", "application/octet-stream")
+            .body(rest.clone())
+            .send()
+            .await
+            .unwrap();
+        if resp.status() != reqwest::StatusCode::CONFLICT {
+            break resp;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "receiver kept the old upload slot occupied"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    assert!(
+        resp.status().is_success(),
+        "encrypted resume failed: {}",
+        resp.text().await.unwrap_or_default()
+    );
+
+    let done = wait_for_status(&state_b, &tid, "completed").await;
+    assert!(done.encrypted);
+    assert_eq!(done.pin, expected_pin);
+    let saved = done.saved_path.expect("resumed file has a path");
+    assert_eq!(
+        std::fs::read(&saved).unwrap(),
+        payload,
+        "decrypted plaintext matches the original"
+    );
 }

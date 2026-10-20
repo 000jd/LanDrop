@@ -4,6 +4,7 @@
 //! against the library:
 //!
 //! - [`config`]: persistent device configuration (TOML, mode 0600).
+//! - [`crypto`]: ephemeral X25519 + seekable ChaCha20 wire encryption.
 //! - [`protocol`]: wire types and helpers (sanitize, unique paths, hashing).
 //! - [`peers`]: discovered + manual peer store with expiry.
 //! - [`transfer`]: transfer state machine, sender and receiver logic.
@@ -28,6 +29,7 @@ pub const BUILD_ID: &str = match option_env!("LANDROP_BUILD_ID") {
 pub mod app;
 pub mod autostart;
 pub mod config;
+pub mod crypto;
 pub mod discovery;
 pub mod events;
 pub mod instance;

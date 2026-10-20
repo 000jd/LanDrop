@@ -584,6 +584,18 @@ html[data-theme="dark"] .icon-moon {
   white-space: nowrap;
 }
 
+/* Subtle marker that the payload used the X25519 + ChaCha20 session. */
+.enc-pill {
+  padding: 2px 8px;
+  border: var(--outline) solid var(--accent);
+  border-radius: var(--r-pill);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
 .device-actions {
   display: inline-flex;
   gap: 6px;

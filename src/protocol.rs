@@ -15,6 +15,10 @@ pub const TOKEN_HEADER: &str = "X-LanDrop-Token";
 pub const UPLOAD_TOKEN_HEADER: &str = "X-LanDrop-Upload-Token";
 /// Header reporting/requesting the resume offset of an interrupted upload.
 pub const UPLOAD_OFFSET_HEADER: &str = "X-LanDrop-Offset";
+/// Header marking an encrypted upload body.
+pub const ENCRYPTED_HEADER: &str = "X-LanDrop-Encrypted";
+/// Value of [`ENCRYPTED_HEADER`] for X25519 + ChaCha20 payloads.
+pub const ENCRYPTION_CHACHA20_V1: &str = "chacha20-v1";
 
 /// Maximum length of a sanitized filename, in characters.
 const MAX_FILENAME_CHARS: usize = 160;
@@ -48,6 +52,11 @@ pub struct Offer {
     /// it and the transfer completes without any file upload.
     #[serde(default)]
     pub text: Option<String>,
+    /// Sender's ephemeral X25519 public key (lower-case hex). When present, a
+    /// v0.2 receiver replies with its own key and the upload is encrypted.
+    /// Older peers ignore the field, so v0.1.0 transfers stay unencrypted.
+    #[serde(default)]
+    pub dh_pub: Option<String>,
 }
 
 /// Longest text snippet a peer may send (16 KiB of characters).
@@ -168,6 +177,8 @@ pub struct TransferView {
     pub text: Option<String>,
     /// Six-digit verification PIN (`NNN-NNN`) for this transfer or batch.
     pub pin: String,
+    /// True when the payload traveled encrypted (X25519 + ChaCha20).
+    pub encrypted: bool,
 }
 
 // ---------------------------------------------------------------------------

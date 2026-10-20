@@ -19,7 +19,10 @@ use tokio::sync::watch;
 use tracing::{error, info, warn};
 
 use crate::peers::Peer;
-use crate::protocol::{Offer, TOKEN_HEADER, UPLOAD_OFFSET_HEADER, UPLOAD_TOKEN_HEADER};
+use crate::protocol::{
+    Offer, ENCRYPTED_HEADER, ENCRYPTION_CHACHA20_V1, TOKEN_HEADER, UPLOAD_OFFSET_HEADER,
+    UPLOAD_TOKEN_HEADER,
+};
 use crate::transfer::{now_secs, Status, TransferManager};
 
 /// Poll interval while waiting for acceptance.
@@ -116,6 +119,17 @@ pub async fn spawn_send_in(
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let (my_id, my_name, _) = mgr.identity().await;
 
+    // Fresh key pair per transfer. Snippets carry their text in the offer, not
+    // in an encrypted upload, so they keep the legacy PIN and no indicator.
+    let dh_keypair = if meta.text.is_none() {
+        Some(
+            crate::crypto::KeyPair::generate()
+                .ok_or_else(|| anyhow!("cannot generate an ephemeral key"))?,
+        )
+    } else {
+        None
+    };
+
     let offer = Offer {
         sender_id: my_id,
         sender_name: my_name,
@@ -127,6 +141,7 @@ pub async fn spawn_send_in(
         batch_id: meta.batch.as_ref().map(|b| b.id.clone()),
         batch_name: meta.batch.as_ref().map(|b| b.name.clone()),
         text: meta.text.clone(),
+        dh_pub: dh_keypair.as_ref().map(|kp| kp.public_hex.clone()),
     };
 
     // The receiver derives the same PIN from this sender/receiver/key triple,
@@ -142,6 +157,7 @@ pub async fn spawn_send_in(
         let mut t = crate::transfer::Transfer::new_outgoing(&peer, &offer);
         let id = t.id.clone();
         t.pin = pin;
+        t.dh_keypair = dh_keypair;
         t.cancel = Some(cancel_tx);
         map.insert(id.clone(), t);
         id
@@ -273,6 +289,35 @@ async fn run_send_inner(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| anyhow!("receiver returned no transfer_id"))?
         .to_string();
+
+    // 1b. Crypto handshake. The session is bound to the receiver's transfer id
+    // because both sides must feed `derive_session` the same identifier.
+    let peer_dh = v["dh_pub"].as_str().map(str::to_string);
+    let receiver_id = v["receiver_id"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| peer.id.clone());
+    let keypair = mgr
+        .with_transfer(id, |t| t.dh_keypair.take())
+        .await
+        .flatten();
+    if let (Some(keypair), Some(peer_dh)) = (keypair, peer_dh) {
+        let session = crate::crypto::derive_session(&keypair.secret, &peer_dh, &remote_id)
+            .ok_or_else(|| anyhow!("receiver returned an invalid dh_pub"))?;
+        let pin_key = offer
+            .batch_id
+            .clone()
+            .unwrap_or_else(|| format!("{}:{}", offer.filename, offer.size));
+        let pin = session.sas_pin(&offer.sender_id, &receiver_id, &pin_key);
+        mgr.with_transfer(id, |t| {
+            t.pin = pin;
+            t.session = Some(session);
+            t.encrypted = true;
+        })
+        .await;
+        mgr.emit_update(id, "transfer_updated").await;
+        info!("transfer {id}: encrypted session established");
+    }
 
     // 2. Poll until accepted / rejected / timeout / cancel.
     let poll_url = format!("{base}/api/v1/offer/{remote_id}");
@@ -458,8 +503,12 @@ async fn upload_once(
             .context("seek staged file")?;
     }
 
+    let session = mgr.session(id).await;
+
     // Stream the file in 64 KiB chunks through a channel, tracking progress
-    // and cancellation, while reqwest consumes the channel.
+    // and cancellation, while reqwest consumes the channel. Each chunk is
+    // encrypted at its plaintext offset, so a resume after a dropped
+    // connection stays keystream-aligned.
     let (chunk_tx, chunk_rx) =
         tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(8);
     {
@@ -471,6 +520,7 @@ async fn upload_once(
         let mut next_progress: u64 = done + PROGRESS_INTERVAL;
         let mut last_emit = Instant::now();
         let mut buf = vec![0u8; 64 * 1024];
+        let session = session.clone();
         tokio::spawn(async move {
             loop {
                 if *cancel_rx.borrow() {
@@ -492,6 +542,7 @@ async fn upload_once(
                 if n == 0 {
                     break;
                 }
+                let chunk_offset = done;
                 done += n as u64;
                 if done >= next_progress {
                     next_progress = done + PROGRESS_INTERVAL;
@@ -511,8 +562,12 @@ async fn upload_once(
                         last_emit = Instant::now();
                     }
                 }
+                let mut chunk = bytes::BytesMut::from(&buf[..n]);
+                if let Some(session) = &session {
+                    session.apply_keystream(chunk_offset, &mut chunk);
+                }
                 tokio::select! {
-                    sent = chunk_tx.send(Ok(bytes::Bytes::copy_from_slice(&buf[..n]))) => {
+                    sent = chunk_tx.send(Ok(chunk.freeze())) => {
                         if sent.is_err() {
                             break;
                         }
@@ -537,6 +592,9 @@ async fn upload_once(
         .header(UPLOAD_TOKEN_HEADER, upload_token)
         .header("Content-Type", "application/octet-stream")
         .timeout(upload_timeout(total.saturating_sub(offset)));
+    if session.is_some() {
+        req = req.header(ENCRYPTED_HEADER, ENCRYPTION_CHACHA20_V1);
+    }
     if offset > 0 {
         req = req.header(UPLOAD_OFFSET_HEADER, offset.to_string());
     }
