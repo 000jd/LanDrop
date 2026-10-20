@@ -154,6 +154,27 @@ async function loadInfo() {
     if (loginToggle && loginToggle.closest("label")) {
       loginToggle.closest("label").hidden = isMobile;
     }
+    // A phone or another laptop opened this node over the LAN. Machine-local
+    // settings would answer 403, so disable them and say why.
+    const onHost = state.info.is_local !== false;
+    for (const id of [
+      "setName",
+      "setPort",
+      "setDownloads",
+      "browseDownloadsBtn",
+      "setAutoAccept",
+      "setAutoAcceptTrusted",
+      "setAskSavePath",
+      "setStartOnLogin",
+      "saveSettingsBtn",
+      "openFolderBtn",
+    ]) {
+      const el = $(id);
+      if (el) el.disabled = !onHost;
+    }
+    $("settingsNote").textContent = onHost
+      ? "Changing port applies on restart"
+      : "Settings can only be changed on the host device";
     showLocalAddrs();
     renderStats();
     loadSettings();

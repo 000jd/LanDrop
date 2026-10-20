@@ -2148,6 +2148,22 @@ async fn shared_inbox_queues_files_and_text_for_the_ui() {
 }
 
 #[tokio::test]
+async fn api_info_marks_loopback_requests_as_local() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, port, _) = instance("bob", dir.path().join("dl")).await;
+    let info: serde_json::Value = reqwest::get(format!("http://127.0.0.1:{port}/api/info"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        info["is_local"], true,
+        "the local UI must be allowed to change settings: {info}"
+    );
+}
+
+#[tokio::test]
 async fn transfer_history_survives_a_restart_and_clear_wipes_the_file() {
     let dir = tempfile::tempdir().unwrap();
     let config_dir = dir.path().join("cfg");

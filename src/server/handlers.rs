@@ -138,7 +138,10 @@ fn mime_for(path: &str) -> &'static str {
 // Local API
 // ---------------------------------------------------------------------------
 
-pub async fn api_info(State(state): State<AppState>) -> Response {
+pub async fn api_info(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Response {
     let cfg = state.cfg.read().await;
     let port = *state.transfers.my_port.read().await;
     let ips = crate::discovery::local_ipv4_addrs()
@@ -157,6 +160,9 @@ pub async fn api_info(State(state): State<AppState>) -> Response {
         "disk_free": disk.map(|(f, _)| f),
         "disk_total": disk.map(|(_, t)| t),
         "ips": ips,
+        // False for a phone or another laptop that opened this node via the
+        // LAN: machine-local settings and folder actions are unavailable there.
+        "is_local": is_local_peer(&addr),
     }))
     .into_response()
 }
