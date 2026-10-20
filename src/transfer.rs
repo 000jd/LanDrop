@@ -10,7 +10,7 @@
 //! plus `rejected`, `failed`, `cancelled`, and a 120 s timeout on `waiting`.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -34,8 +34,11 @@ pub const OFFER_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long a transfer may go without progress updates before it fails.
 pub const STALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
-/// Terminal transfers are kept this long so the UI can show history.
-const HISTORY_TTL: Duration = Duration::from_secs(60 * 60);
+/// File name of the persisted terminal-transfer history.
+pub const HISTORY_FILE_NAME: &str = "history.json";
+
+/// Most recent terminal transfers kept in memory and in `history.json`.
+pub const HISTORY_LIMIT: usize = 100;
 
 /// Status of a transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +80,14 @@ impl Status {
             _ => return None,
         })
     }
+
+    /// True for states that no longer change and belong in the history.
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Status::Completed | Status::Rejected | Status::Failed | Status::Cancelled
+        )
+    }
 }
 
 impl Serialize for Status {
@@ -93,7 +104,8 @@ impl<'de> Deserialize<'de> for Status {
 }
 
 /// Direction of a transfer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Direction {
     Incoming,
     Outgoing,
@@ -276,6 +288,99 @@ impl Transfer {
     }
 }
 
+/// A terminal transfer as stored in `history.json`.
+///
+/// Volatile fields (upload tokens, partial-file paths, cancellation channels)
+/// are deliberately absent: a restored transfer can be inspected or cleared,
+/// never resumed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    pub id: String,
+    pub direction: Direction,
+    pub filename: String,
+    pub size: u64,
+    pub peer_id: String,
+    pub peer_name: String,
+    pub peer_addr: String,
+    pub status: Status,
+    pub progress: f64,
+    pub saved_path: Option<String>,
+    pub note: String,
+    pub error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub sha256: Option<String>,
+    pub rel_path: Option<String>,
+    pub batch_id: Option<String>,
+    pub batch_name: Option<String>,
+    pub text: Option<String>,
+    pub pin: String,
+    pub bytes_done: u64,
+}
+
+impl HistoryEntry {
+    fn from_transfer(t: &Transfer) -> Self {
+        Self {
+            id: t.id.clone(),
+            direction: t.direction,
+            filename: t.filename.clone(),
+            size: t.size,
+            peer_id: t.peer_id.clone(),
+            peer_name: t.peer_name.clone(),
+            peer_addr: t.peer_addr.clone(),
+            status: t.status,
+            progress: t.progress,
+            saved_path: t
+                .saved_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned()),
+            note: t.note.clone(),
+            error: t.error.clone(),
+            created_at: t.created_at,
+            updated_at: t.updated_at,
+            sha256: t.sha256.clone(),
+            rel_path: t.rel_path.clone(),
+            batch_id: t.batch_id.clone(),
+            batch_name: t.batch_name.clone(),
+            text: t.text.clone(),
+            pin: t.pin.clone(),
+            bytes_done: t.bytes_done,
+        }
+    }
+
+    fn into_transfer(self) -> Transfer {
+        Transfer {
+            id: self.id,
+            direction: self.direction,
+            filename: self.filename,
+            size: self.size,
+            peer_id: self.peer_id,
+            peer_name: self.peer_name,
+            peer_addr: self.peer_addr,
+            status: self.status,
+            progress: self.progress,
+            saved_path: self.saved_path.map(PathBuf::from),
+            note: self.note,
+            error: self.error,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            sha256: self.sha256,
+            rel_path: self.rel_path,
+            batch_id: self.batch_id,
+            batch_name: self.batch_name,
+            text: self.text,
+            pin: self.pin,
+            bytes_done: self.bytes_done,
+            started_at: None,
+            save_dir: None,
+            upload_token: None,
+            part_path: None,
+            uploading: false,
+            cancel: None,
+        }
+    }
+}
+
 /// Result of claiming the single upload slot for a transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UploadStart {
@@ -341,6 +446,11 @@ pub struct TransferManager {
     /// Upload slots, so a large folder streams in a bounded queue instead of
     /// opening one parallel upload per file.
     pub upload_slots: Arc<tokio::sync::Semaphore>,
+    /// Where terminal transfers are persisted (`<config_dir>/history.json`).
+    /// `None` disables persistence (unit tests and embedded use).
+    history_path: Arc<RwLock<Option<PathBuf>>>,
+    /// Serializes history writes and the clear-file operation.
+    history_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl TransferManager {
@@ -362,6 +472,86 @@ impl TransferManager {
             metrics: Arc::new(crate::metrics::Metrics::new()),
             batch_prompts: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             upload_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_UPLOADS)),
+            history_path: Arc::new(RwLock::new(None)),
+            history_lock: Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+
+    // -- persistent history ------------------------------------------------
+
+    /// Point the manager at `<config_dir>/history.json`.
+    pub async fn set_history_path(&self, path: Option<PathBuf>) {
+        *self.history_path.write().await = path;
+    }
+
+    /// Restore terminal transfers from a history file.
+    ///
+    /// A missing file is not an error; a malformed one is reported so the
+    /// caller can log it and keep starting. Returns how many entries loaded.
+    pub async fn load_history(&self, path: &Path) -> Result<usize> {
+        let raw = match tokio::fs::read_to_string(path).await {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e.into()),
+        };
+        let mut entries: Vec<HistoryEntry> = serde_json::from_str(&raw)?;
+        entries.sort_by_key(|e| std::cmp::Reverse(e.updated_at));
+        entries.truncate(HISTORY_LIMIT);
+        let mut map = self.transfers.write().await;
+        let mut loaded = 0;
+        for entry in entries {
+            // A history file only ever holds terminal states. Ignore anything
+            // else rather than resurrecting an active-looking transfer.
+            if !entry.status.is_terminal() || map.contains_key(&entry.id) {
+                continue;
+            }
+            map.insert(entry.id.clone(), entry.into_transfer());
+            loaded += 1;
+        }
+        Ok(loaded)
+    }
+
+    /// Rewrite the history file from the current terminal transfers.
+    ///
+    /// Best effort: a failure is logged, never propagated into a transfer.
+    pub async fn persist_history(&self) {
+        let Some(path) = self.history_path.read().await.clone() else {
+            return;
+        };
+        let _guard = self.history_lock.lock().await;
+        let entries = {
+            let map = self.transfers.read().await;
+            let mut entries: Vec<HistoryEntry> = map
+                .values()
+                .filter(|t| t.status.is_terminal())
+                .map(HistoryEntry::from_transfer)
+                .collect();
+            entries.sort_by_key(|e| std::cmp::Reverse(e.updated_at));
+            entries.truncate(HISTORY_LIMIT);
+            entries
+        };
+        let written = tokio::task::spawn_blocking(move || -> Result<()> {
+            let data = serde_json::to_vec_pretty(&entries)?;
+            crate::config::write_atomic_0600(&path, &data)
+        })
+        .await;
+        match written {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => warn!("failed to persist transfer history: {e:#}"),
+            Err(e) => warn!("history writer task failed: {e}"),
+        }
+    }
+
+    /// Remove `history.json` entirely (used by "Clear history").
+    async fn remove_history_file(&self) {
+        let _guard = self.history_lock.lock().await;
+        let Some(path) = self.history_path.read().await.clone() else {
+            return;
+        };
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => warn!("failed to remove {}: {e}", path.display()),
         }
     }
 
@@ -451,6 +641,7 @@ impl TransferManager {
             let _ = tokio::fs::remove_file(&part).await;
         }
         self.events.send("transfer_updated", &view);
+        self.persist_history().await;
         true
     }
 
@@ -461,6 +652,7 @@ impl TransferManager {
         let mut expired: Vec<String> = Vec::new();
         let mut cancels: Vec<watch::Sender<bool>> = Vec::new();
         let mut parts: Vec<PathBuf> = Vec::new();
+        let mut history_changed = false;
         {
             let mut map = self.transfers.write().await;
             // A batch streams through a few slots, so files queued behind the
@@ -517,15 +709,23 @@ impl TransferManager {
                     cancels.push(tx.clone());
                 }
                 expired.push(id.clone());
+                history_changed = true;
             }
-            // Drop terminal history after a while so the map stays bounded.
-            map.retain(|_, t| {
-                let terminal = matches!(
-                    t.status,
-                    Status::Completed | Status::Rejected | Status::Failed | Status::Cancelled
-                );
-                !terminal || now - t.updated_at <= HISTORY_TTL.as_secs() as i64
-            });
+            // Keep the map bounded exactly like history.json: the newest
+            // terminal entries stay, older ones are dropped.
+            let mut terminal: Vec<(String, i64)> = map
+                .iter()
+                .filter(|(_, t)| t.status.is_terminal())
+                .map(|(id, t)| (id.clone(), t.updated_at))
+                .collect();
+            if terminal.len() > HISTORY_LIMIT {
+                terminal.sort_by_key(|(_, updated_at)| *updated_at);
+                let excess = terminal.len() - HISTORY_LIMIT;
+                for (id, _) in terminal.into_iter().take(excess) {
+                    map.remove(&id);
+                }
+                history_changed = true;
+            }
         }
         for tx in cancels {
             let _ = tx.send(true);
@@ -535,6 +735,9 @@ impl TransferManager {
         }
         for id in expired {
             self.emit_update(&id, "transfer_failed").await;
+        }
+        if history_changed {
+            self.persist_history().await;
         }
     }
 
@@ -548,10 +751,7 @@ impl TransferManager {
             let mut map = self.transfers.write().await;
             let before = map.len();
             map.retain(|_, t| {
-                let terminal = matches!(
-                    t.status,
-                    Status::Completed | Status::Failed | Status::Cancelled | Status::Rejected
-                );
+                let terminal = t.status.is_terminal();
                 if terminal {
                     if let Some(part) = t.part_path.take() {
                         parts.push(part);
@@ -572,6 +772,7 @@ impl TransferManager {
                 &serde_json::json!({ "cleared": removed }),
             );
         }
+        self.remove_history_file().await;
         removed
     }
 
@@ -756,6 +957,7 @@ impl TransferManager {
             // receive_stream never runs for a snippet, so this is its completion.
             self.metrics.transfer_finished();
             self.emit_update(id, "transfer_completed").await;
+            self.persist_history().await;
             info!("accepted transfer {id} (text snippet, completed)");
         } else {
             self.emit_update(id, "transfer_updated").await;
@@ -783,6 +985,7 @@ impl TransferManager {
             t.updated_at = now_secs();
         }
         self.emit_update(id, "transfer_updated").await;
+        self.persist_history().await;
         info!("rejected transfer {id}");
         Ok(())
     }
@@ -1046,5 +1249,48 @@ mod tests {
         t.started_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(2));
         let (_, _, eta) = t.progress_stats();
         assert_eq!(eta, None);
+    }
+
+    #[tokio::test]
+    async fn history_round_trips_and_keeps_the_newest_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(HISTORY_FILE_NAME);
+        let mgr = TransferManager::new(std::sync::Arc::new(crate::peers::PeerStore::new()));
+        mgr.set_history_path(Some(path.clone())).await;
+        {
+            let mut map = mgr.transfers.write().await;
+            for i in 0..(HISTORY_LIMIT + 5) {
+                let mut t = Transfer::new_outgoing(&peer(), &offer(10));
+                t.status = Status::Completed;
+                t.created_at = 1_000 + i as i64;
+                t.updated_at = t.created_at;
+                t.bytes_done = 10;
+                map.insert(t.id.clone(), t);
+            }
+        }
+        mgr.persist_history().await;
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let entries: Vec<HistoryEntry> = serde_json::from_str(&raw).unwrap();
+        assert_eq!(entries.len(), HISTORY_LIMIT);
+        assert_eq!(
+            entries[0].updated_at,
+            1_000 + HISTORY_LIMIT as i64 + 4,
+            "newest entry comes first"
+        );
+        assert!(
+            entries.iter().all(|e| e.updated_at >= 1_005),
+            "only the oldest five were dropped"
+        );
+
+        // A fresh manager restores the same window.
+        let restored = TransferManager::new(std::sync::Arc::new(crate::peers::PeerStore::new()));
+        restored.set_history_path(Some(path.clone())).await;
+        assert_eq!(restored.load_history(&path).await.unwrap(), HISTORY_LIMIT);
+        assert_eq!(restored.list().await.len(), HISTORY_LIMIT);
+
+        // Clearing removes both the records and the file on disk.
+        assert_eq!(restored.clear_terminal().await, HISTORY_LIMIT);
+        assert!(!path.exists(), "clear must wipe history.json");
     }
 }

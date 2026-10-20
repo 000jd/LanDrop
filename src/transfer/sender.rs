@@ -187,6 +187,7 @@ pub async fn spawn_send_in(
                 mgr.metrics.transfer_failed();
                 error!("transfer {id_spawn} failed: {e:#}");
                 mgr.emit_update(&id_spawn, "transfer_failed").await;
+                mgr.persist_history().await;
             } else {
                 info!("transfer {id_spawn} stopped: {e:#}");
             }
@@ -288,6 +289,7 @@ async fn run_send_inner(
             .await;
             mgr.metrics.transfer_finished();
             mgr.emit_update(id, "transfer_completed").await;
+            mgr.persist_history().await;
             return Ok(());
         }
     };
@@ -384,6 +386,7 @@ async fn run_send_inner(
                 })
                 .await;
                 mgr.emit_update(id, "transfer_completed").await;
+                mgr.persist_history().await;
                 info!(
                     "transfer {id} complete: {} -> {}:{}",
                     offer.filename, peer.addr, peer.port

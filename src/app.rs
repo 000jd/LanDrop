@@ -220,6 +220,17 @@ pub async fn start_node(options: NodeOptions) -> Result<RunningNode> {
         .interactive_prompts
         .store(true, std::sync::atomic::Ordering::Relaxed);
 
+    // Completed files and received text snippets survive a restart.
+    if let Some(dir) = &config_dir {
+        let history = dir.join(crate::transfer::HISTORY_FILE_NAME);
+        transfers.set_history_path(Some(history.clone())).await;
+        match transfers.load_history(&history).await {
+            Ok(n) if n > 0 => info!("restored {n} transfer(s) from {}", history.display()),
+            Ok(_) => {}
+            Err(e) => warn!("ignoring {}: {e:#}", history.display()),
+        }
+    }
+
     let mut state = AppState::new(cfg.clone(), peers.clone(), transfers.clone());
     state.config_dir = config_dir.clone();
     state.disk_cfg = Arc::new(tokio::sync::RwLock::new(disk_view));

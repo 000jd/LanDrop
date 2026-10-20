@@ -380,6 +380,7 @@ where
             })
             .await;
             mgr.emit_update(id, "transfer_completed").await;
+            mgr.persist_history().await;
             if notify_on {
                 crate::notify::progress(
                     id,
@@ -435,7 +436,10 @@ where
                 })
                 .await;
             match kind {
-                Some(FailKind::Failed) => mgr.emit_update(id, "transfer_failed").await,
+                Some(FailKind::Failed) => {
+                    mgr.emit_update(id, "transfer_failed").await;
+                    mgr.persist_history().await;
+                }
                 Some(FailKind::Terminal) => mgr.emit_update(id, "transfer_updated").await,
                 None => {}
             }

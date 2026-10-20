@@ -2148,6 +2148,134 @@ async fn shared_inbox_queues_files_and_text_for_the_ui() {
 }
 
 #[tokio::test]
+async fn transfer_history_survives_a_restart_and_clear_wipes_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("cfg");
+    let downloads = dir.path().join("dl");
+    let node_options = || landrop::app::NodeOptions {
+        port: Some(0),
+        downloads: Some(downloads.to_string_lossy().into_owned()),
+        config_dir: Some(config_dir.to_string_lossy().into_owned()),
+        no_mdns: true,
+        port_scan: false,
+        ..landrop::app::NodeOptions::default()
+    };
+
+    let node = landrop::app::start_node(node_options()).await.unwrap();
+    let base = node.local_url();
+    let client = reqwest::Client::new();
+
+    // One completed incoming file.
+    let file_id = offer_accepted(&base, &node.state, "persist.txt", 5, None).await;
+    let token = upload_token(&node.state, &file_id).await;
+    let resp = client
+        .post(format!("{base}/api/v1/upload/{file_id}"))
+        .header(UPLOAD_TOKEN_HEADER, token)
+        .body("hello")
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let completed = wait_for_status(&node.state, &file_id, "completed").await;
+    let saved = completed.saved_path.expect("completed file has a path");
+
+    // One completed text snippet.
+    let resp = client
+        .post(format!("{base}/api/v1/offer"))
+        .json(&Offer {
+            sender_id: "tester".into(),
+            sender_name: "tester".into(),
+            filename: "Text: hello snippet".into(),
+            size: 13,
+            sha256: None,
+            note: String::new(),
+            rel_path: None,
+            batch_id: None,
+            batch_name: None,
+            text: Some("hello snippet".into()),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let snippet_id = resp.json::<serde_json::Value>().await.unwrap()["transfer_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    node.state
+        .transfers
+        .accept(&snippet_id, None)
+        .await
+        .unwrap();
+    wait_for_status(&node.state, &snippet_id, "completed").await;
+
+    // Persistence is asynchronous: wait for both terminal entries to land.
+    let history_path = config_dir.join(landrop::transfer::HISTORY_FILE_NAME);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let entries = tokio::fs::read_to_string(&history_path)
+            .await
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Vec<serde_json::Value>>(&raw).ok())
+            .unwrap_or_default();
+        if entries.len() >= 2 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "history.json did not receive both terminal transfers"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    // Stop the node and start a fresh one on the same config directory.
+    node.shutdown();
+    tokio::time::timeout(std::time::Duration::from_secs(5), node.wait_for_shutdown())
+        .await
+        .expect("first node should shut down");
+    drop(node);
+
+    let node = landrop::app::start_node(node_options()).await.unwrap();
+    let restored = node.state.transfers.list().await;
+    assert_eq!(
+        restored.len(),
+        2,
+        "both history entries restored: {restored:?}"
+    );
+    let restored_file = restored
+        .iter()
+        .find(|t| t.filename == "persist.txt")
+        .expect("completed file restored");
+    assert_eq!(restored_file.status, "completed");
+    assert_eq!(
+        restored_file.saved_path.as_deref(),
+        Some(saved.as_str()),
+        "the saved path survives the restart"
+    );
+    let restored_snippet = restored
+        .iter()
+        .find(|t| t.text.as_deref() == Some("hello snippet"))
+        .expect("completed snippet restored");
+    assert_eq!(restored_snippet.status, "completed");
+
+    // Clearing history removes the rows and the file on disk.
+    let resp = client
+        .post(format!("{}/api/transfers/clear", node.local_url()))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    assert!(
+        !history_path.exists(),
+        "clear must remove history.json from disk"
+    );
+    assert!(node.state.transfers.list().await.is_empty());
+
+    node.shutdown();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), node.wait_for_shutdown()).await;
+}
+
+#[tokio::test]
 async fn clear_history_keeps_active_transfers_and_saved_files() {
     let dir = tempfile::tempdir().unwrap();
     let (state, port, _) = instance("bob", dir.path().join("dl")).await;
