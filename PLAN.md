@@ -582,3 +582,85 @@ fmt and the cross-target/MSRV checks.
 - README, this plan and `docs/security-tests.md` now cover snippets, QR/share
   links, resume, PINs/trusted peers, batch endpoints and the four-slot upload
   semaphore, the Android multicast lock and share sheet, and the history clear.
+
+## v0.2.0 Stage 1: history, guest mode, zip links, paste, systemd (implemented)
+
+Delivered as five commits on top of `8f45aad`, each green on tests, clippy, fmt
+and the cross-target/MSRV checks.
+
+### Persistent transfer and snippet history (`c74e4d9`)
+
+- Terminal transfers (completed / failed / cancelled / rejected) are snapshotted
+  to `<config_dir>/history.json` through `config::write_atomic_0600`, capped at
+  the 100 most recent rows; the in-memory map uses the same cap.
+- `start_node` restores the file, so saved paths and received text snippets
+  survive a restart. `POST /api/transfers/clear` removes the rows and the file.
+- Covered by `transfer::tests::history_round_trips_and_keeps_the_newest_entries`
+  and the restart/clear integration test.
+
+### Remote browser guest mode (`03ae6eb`)
+
+- `GET /api/info` adds `is_local` (loopback or one of this host's addresses).
+- The UI disables name/port/downloads/browse/auto-accept/ask-save/autostart/save
+  and "open download folder" when `is_local === false`, and explains that
+  settings can only be changed on the host device.
+
+### Multi-file and folder `.zip` share links (`e627860`)
+
+- `POST /api/share-link` accepts repeated `file`/`rel_path` fields; a single
+  flat file is staged directly, while a multi-file selection or folder is
+  bundled into an uncompressed `Stored` `.zip` in `outbox`.
+- `POST /api/share-link-path` does the same for machine-local paths and stages a
+  single file separately so expiry never deletes the source.
+- `src/zip.rs` is a dependency-free ZIP writer: CRC-32, UTF-8 names, unique
+  entry names, mode 0600 and the classic non-ZIP64 limits.
+
+### Clipboard paste and systemd (`7224adf`)
+
+- A **Paste** button fills `#textToSend` from `navigator.clipboard.readText()`,
+  with a toast when the browser blocks clipboard access.
+- `assets/landrop.service` runs `%h/.local/bin/landrop --hidden` with
+  `Restart=on-failure`; `make install-service` / `uninstall-service` manage the
+  user unit.
+
+Status: **implemented and verified.** 62 unit + 40 integration tests, clippy,
+fmt, MSRV 1.86, Windows/macOS cross-checks, UI at 960×760
+(`scrollHeight == innerHeight == 760`) and the installer/UI-asset guards green.
+
+## v0.2.0 Stage 2: wire encryption and Android background receiving (implemented)
+
+### Ephemeral X25519 + seekable ChaCha20 (`1d955c2`)
+
+- `src/crypto.rs` implements ephemeral X25519 (via `x25519-dalek`, pure Rust,
+  MSRV-compatible) and RFC 8439 ChaCha20 with a table-free dependency footprint.
+- `Offer.dh_pub` asks for encryption; the receiver replies with `dh_pub` and
+  `receiver_id`. Both sides derive a session keyed by the raw shared secret and
+  the receiver's transfer id, and `SessionKey::apply_keystream(offset, buf)`
+  generates the keystream at any plaintext byte offset.
+- Upload chunks are encrypted at `offset + streamed_so_far` and sent with
+  `X-LanDrop-Encrypted: chacha20-v1`; the receiver decrypts at the same offset
+  before hashing and writing `.{filename}.part-{id}`. Resumes therefore remain
+  byte-for-byte compatible with `X-LanDrop-Offset`.
+- The PIN becomes `SHA-256("landrop-sas:" || shared_secret || sender_id ||
+  receiver_id || key)` for encrypted transfers; a LAN MITM produces mismatched
+  PINs. Offers without `dh_pub` keep the v0.1.0 unencrypted path.
+- `TransferView.encrypted` drives a subtle UI marker. Tests cover X25519
+  agreement, the RFC 8439 vector, arbitrary chunk splits/resume, SAS matching
+  and an end-to-end encrypted transfer with a mid-stream drop and resume.
+
+### Android foreground service (`06057fb`)
+
+- `LanDropService` creates the low-importance `landrop_bg` channel and keeps a
+  quiet ongoing "LanDrop — Ready on Wi-Fi" notification, using
+  `FOREGROUND_SERVICE_TYPE_DATA_SYNC` on API 29+.
+- `MainActivity` starts it in `onCreate` inside `runCatching` (OEM background
+  restrictions never crash the activity) and stops it in `onDestroy`.
+- Manifest adds `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC` and the
+  non-exported `dataSync` service. The aarch64 APK builds cleanly and the
+  manifest dump reports `versionName 0.2.0` and the new service.
+
+### Release
+
+Tag `v0.2.0`, publish the cross-platform workflow output, upload the signed
+aarch64 APK and a `SHA256SUMS.txt` that covers every asset, then exercise
+`install/install.sh` against the published tag.

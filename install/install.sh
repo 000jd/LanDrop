@@ -6,7 +6,7 @@
 #   curl -fsSL ... | bash -s -- --uninstall
 #
 # Environment:
-#   LANDROP_VERSION   Release tag to install (default: latest, fallback v0.1.0)
+#   LANDROP_VERSION   Release tag to install (default: latest, fallback v0.2.0)
 #   LANDROP_DOWNLOADS Override the release download base URL (mirrors/tests)
 #
 # No sudo is ever required: everything lands under ~/.local.
@@ -14,7 +14,7 @@
 set -euo pipefail
 
 REPO="000jd/LanDrop"
-DEFAULT_TAG="v0.1.0"
+DEFAULT_TAG="v0.2.0"
 CLI_NAME="landrop"
 DESKTOP_NAME="landrop-desktop"
 
@@ -36,7 +36,7 @@ Options:
   -h, --help    show this help
 
 Environment:
-  LANDROP_VERSION   release tag to install (default: latest, fallback v0.1.0)
+  LANDROP_VERSION   release tag to install (default: latest, fallback v0.2.0)
   LANDROP_DOWNLOADS override the download base URL (mirrors/tests)
 EOF
 }

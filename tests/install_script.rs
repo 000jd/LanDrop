@@ -49,7 +49,7 @@ mod unix {
         let dry = Command::new("bash")
             .arg(&path)
             .arg("--dry-run")
-            .env("LANDROP_VERSION", "v0.1.0")
+            .env("LANDROP_VERSION", "v0.2.0")
             .output()
             .expect("run installer --dry-run");
         assert!(
@@ -59,7 +59,7 @@ mod unix {
         );
         let text = String::from_utf8_lossy(&dry.stdout);
         assert!(text.contains("LanDrop installer (dry run)"));
-        assert!(text.contains("v0.1.0"));
+        assert!(text.contains("v0.2.0"));
         assert!(text.contains(".local/bin/landrop"));
 
         let uninstall = Command::new("bash")

@@ -35,8 +35,9 @@
 | Streams straight to the other device — no size limit, no buffering | Progress with speed and time remaining, SHA-256 verified | mDNS + a UDP beacon, with manual `ip:port` peers as a fallback |
 
 No cloud service, no accounts, no internet connection needed: files travel
-peer-to-peer over plain HTTP on your own LAN, and the Rust backend plus the web
-UI ship as one self-contained binary.
+peer-to-peer on your own LAN, and the Rust backend plus the web UI ship as one
+self-contained binary. v0.2.0 encrypts file payloads with a fresh ephemeral
+X25519 + ChaCha20 session (older peers fall back to the v0.1.0 plain-HTTP path).
 
 <details>
 <summary><strong>Explore the app</strong> · Send, Receive and Settings in light and dark</summary>
@@ -75,7 +76,7 @@ No sudo, no build tools:
 curl -fsSL https://raw.githubusercontent.com/000jd/LanDrop/main/install/install.sh | bash
 ```
 
-The installer detects your OS and CPU, downloads the matching `v0.1.0` asset and
+The installer detects your OS and CPU, downloads the matching `v0.2.0` asset and
 `SHA256SUMS.txt`, verifies the SHA-256 checksum, and installs
 `~/.local/bin/landrop`. In a graphical session it also installs the desktop app
 (force it with `--desktop`); if a prebuilt binary is not available yet and
@@ -90,20 +91,20 @@ curl -fsSL https://raw.githubusercontent.com/000jd/LanDrop/main/install/install.
 If `~/.local/bin` is not on your `PATH`, the installer prints the exact `export
 PATH=…` line to add.
 
-### Direct downloads (v0.1.0)
+### Direct downloads (v0.2.0)
 
 | Platform | Download | Notes |
 |---|---|---|
-| Linux x86_64 | [`LanDrop-v0.1.0-linux-x86_64`](https://github.com/000jd/LanDrop/releases/download/v0.1.0/LanDrop-v0.1.0-linux-x86_64) | standalone CLI + browser UI |
-| Linux x86_64 | [`LanDrop-v0.1.0-linux-x86_64-desktop`](https://github.com/000jd/LanDrop/releases/download/v0.1.0/LanDrop-v0.1.0-linux-x86_64-desktop) | Tauri desktop app (window + tray) |
-| Debian / Ubuntu | [`LanDrop-v0.1.0-linux-amd64.deb`](https://github.com/000jd/LanDrop/releases/download/v0.1.0/LanDrop-v0.1.0-linux-amd64.deb) | `sudo dpkg -i …` |
-| Fedora / RHEL | [`LanDrop-v0.1.0-linux-x86_64.rpm`](https://github.com/000jd/LanDrop/releases/download/v0.1.0/LanDrop-v0.1.0-linux-x86_64.rpm) | `sudo rpm -i …` |
-| Linux | [`LanDrop-v0.1.0-linux-x86_64.AppImage`](https://github.com/000jd/LanDrop/releases/download/v0.1.0/LanDrop-v0.1.0-linux-x86_64.AppImage) | `chmod +x … && ./…` |
-| macOS arm64 | [`LanDrop-v0.1.0-macos-arm64`](https://github.com/000jd/LanDrop/releases/download/v0.1.0/LanDrop-v0.1.0-macos-arm64) | Apple silicon |
-| macOS x86_64 | [`LanDrop-v0.1.0-macos-x86_64`](https://github.com/000jd/LanDrop/releases/download/v0.1.0/LanDrop-v0.1.0-macos-x86_64) | Intel |
-| Windows x86_64 | [`LanDrop-v0.1.0-windows-x86_64.exe`](https://github.com/000jd/LanDrop/releases/download/v0.1.0/LanDrop-v0.1.0-windows-x86_64.exe) | browser mode |
-| Android arm64 | [`LanDrop-v0.1.0-android-arm64.apk`](https://github.com/000jd/LanDrop/releases/download/v0.1.0/LanDrop-v0.1.0-android-arm64.apk) | signed APK, sideload |
-| All assets | [`SHA256SUMS.txt`](https://github.com/000jd/LanDrop/releases/download/v0.1.0/SHA256SUMS.txt) | verify with `sha256sum -c` / `shasum -a 256 -c` |
+| Linux x86_64 | [`LanDrop-v0.2.0-linux-x86_64`](https://github.com/000jd/LanDrop/releases/download/v0.2.0/LanDrop-v0.2.0-linux-x86_64) | standalone CLI + browser UI |
+| Linux x86_64 | [`LanDrop-v0.2.0-linux-x86_64-desktop`](https://github.com/000jd/LanDrop/releases/download/v0.2.0/LanDrop-v0.2.0-linux-x86_64-desktop) | Tauri desktop app (window + tray) |
+| Debian / Ubuntu | [`LanDrop-v0.2.0-linux-amd64.deb`](https://github.com/000jd/LanDrop/releases/download/v0.2.0/LanDrop-v0.2.0-linux-amd64.deb) | `sudo dpkg -i …` |
+| Fedora / RHEL | [`LanDrop-v0.2.0-linux-x86_64.rpm`](https://github.com/000jd/LanDrop/releases/download/v0.2.0/LanDrop-v0.2.0-linux-x86_64.rpm) | `sudo rpm -i …` |
+| Linux | [`LanDrop-v0.2.0-linux-x86_64.AppImage`](https://github.com/000jd/LanDrop/releases/download/v0.2.0/LanDrop-v0.2.0-linux-x86_64.AppImage) | `chmod +x … && ./…` |
+| macOS arm64 | [`LanDrop-v0.2.0-macos-arm64`](https://github.com/000jd/LanDrop/releases/download/v0.2.0/LanDrop-v0.2.0-macos-arm64) | Apple silicon |
+| macOS x86_64 | [`LanDrop-v0.2.0-macos-x86_64`](https://github.com/000jd/LanDrop/releases/download/v0.2.0/LanDrop-v0.2.0-macos-x86_64) | Intel |
+| Windows x86_64 | [`LanDrop-v0.2.0-windows-x86_64.exe`](https://github.com/000jd/LanDrop/releases/download/v0.2.0/LanDrop-v0.2.0-windows-x86_64.exe) | browser mode |
+| Android arm64 | [`LanDrop-v0.2.0-android-arm64.apk`](https://github.com/000jd/LanDrop/releases/download/v0.2.0/LanDrop-v0.2.0-android-arm64.apk) | signed APK, sideload |
+| All assets | [`SHA256SUMS.txt`](https://github.com/000jd/LanDrop/releases/download/v0.2.0/SHA256SUMS.txt) | verify with `sha256sum -c` / `shasum -a 256 -c` |
 
 ### Build from source (browser mode)
 
@@ -186,18 +187,38 @@ no install at all.
   failed for.
 - **Text and links**: paste a URL or snippet and send it like a file. The
   receiver sees it as a normal offer, can read, copy or open it in the app, and
-  nothing is written to disk.
+  nothing is written to disk. The Send card's **Paste** button fills the snippet
+  box from the clipboard, with a friendly fallback when the browser blocks it.
+- **Persistent history**: terminal transfers (completed, failed, cancelled,
+  rejected) and received text snippets are written atomically to
+  `~/.config/landrop/history.json` (mode 0600, newest 100) and restored on the
+  next start, so saved paths and snippets survive a restart. **Clear history**
+  removes the file without touching saved files.
 - **QR onboarding and browser download links**: `GET /api/qr` renders the node's
-  LAN URL (or a live share link) as an inline SVG, and `POST /api/share-link`
-  stages a file behind a 15-minute `/d/{token}` URL that any browser on the
+  LAN URL (or a live share link) as an inline SVG. `POST /api/share-link` stages
+  one file directly, or bundles a multi-file selection / dropped folder into an
+  uncompressed `.zip` behind a 15-minute `/d/{token}` URL that any browser on the
   network can open — no LanDrop install required on the phone.
+  `POST /api/share-link-path` does the same for machine-local paths.
 - **Resumable uploads**: a dropped connection keeps the partial file on the
   receiver. The sender asks `HEAD /api/v1/upload/{id}` for the current offset and
   resumes with `X-LanDrop-Offset`; the SHA-256 still covers the whole file.
-- **Verification PIN + trusted devices**: every transfer/batch shows a
-  `NNN-NNN` PIN derived from sender, receiver and batch/file, so both people can
-  confirm they are looking at the same transfer. Mark a device as trusted (or
-  enable "auto-accept from trusted devices only") to skip the prompt for it.
+- **Encrypted payloads (v0.2.0)**: every file send negotiates a fresh ephemeral
+  **X25519** session (bound to the receiver's transfer id) and encrypts each
+  upload chunk with **RFC 8439 ChaCha20** at its plaintext byte offset
+  (`X-LanDrop-Encrypted: chacha20-v1`). The offset-aware keystream keeps
+  encryption fully compatible with `X-LanDrop-Offset` resumes. Peers that do not
+  advertise `dh_pub` keep the v0.1.0 unencrypted behaviour.
+- **Cryptographic SAS PIN + trusted devices**: an encrypted transfer's
+  `NNN-NNN` PIN is `SHA-256("landrop-sas:" || shared_secret || sender ||
+  receiver || key)`, so a man-in-the-middle on the Wi-Fi establishes different
+  secrets and the two screens show different PINs. Legacy unencrypted peers keep
+  the identifier-derived PIN. Mark a device as trusted (or enable "auto-accept
+  from trusted devices only") to skip the prompt for it.
+- **Guest mode on phones and other laptops**: `GET /api/info` reports
+  `is_local`; a browser on the LAN gets the machine-local settings controls
+  disabled with an explanation instead of hitting `403`s. Sending, accepting and
+  rejecting keep working from any device.
 - Any file type; streaming transfer (no full-file buffering)
 - SHA-256 integrity check; the declared size is enforced while streaming;
   collision-safe filenames (`file.txt`, `file-1.txt`, …)
@@ -214,10 +235,16 @@ no install at all.
 - Desktop notifications for incoming requests, and a progress-bar notification
   while receiving (`notify-send` / notification daemon)
 - **Android share sheet**: share files or text from any app straight into LanDrop
-  (`ACTION_SEND` / `ACTION_SEND_MULTIPLE`), and a Wi-Fi `MulticastLock` keeps
-  mDNS discovery receiving while the app is visible
+  (`ACTION_SEND` / `ACTION_SEND_MULTIPLE`), a Wi-Fi `MulticastLock` keeps mDNS
+  discovery receiving while the app is visible, and a `dataSync` **foreground
+  service** with a quiet ongoing notification keeps the node reachable after the
+  app is backgrounded
 - Persistent settings (name, port, download dir, trusted devices) in
   `~/.config/landrop/config.toml`; CLI flags apply to a single run only
+- **systemd user service**: `make install-service` installs the CLI plus
+  `landrop.service` (`--hidden`, `Restart=on-failure`) under
+  `$XDG_CONFIG_HOME/systemd/user`, so background receiving starts without a
+  desktop session; `make uninstall-service` removes it
 - Private, auto-cleaned staging for outgoing files (no leftover copies)
 - Tauri desktop wrapper with tray icon, **single instance** (a second launch
   raises the window that is already open; a newer build retires an idle older
@@ -314,10 +341,11 @@ installing, **Settings → This device → Version** shows the build time, so yo
 tell instantly which copy is running.
 
 What works: discovery (UDP beacon + mDNS), sending, accepting/rejecting, text
-snippets, QR codes and browser share links, resumable uploads, verification PINs
-and trusted peers, the folder picker, speed/ETA, SSE live updates, settings and
-progress in the UI. The backend runs inside the app process and the webview talks
-to it on `127.0.0.1` (cleartext is allowed for localhost only, via
+snippets, QR codes and browser share links (single files and zipped folders),
+resumable uploads, encrypted payloads with cryptographic SAS PINs, trusted peers,
+the folder picker, speed/ETA, SSE live updates, settings and progress in the UI.
+The backend runs inside the app process and the webview talks to it on
+`127.0.0.1` (cleartext is allowed for localhost only, via
 `desktop/gen/android/.../network_security_config.xml`).
 
 The system **share sheet** is wired in: sending files or text from another app
@@ -338,8 +366,11 @@ Mobile behaviour to know about:
   multicast while the app is visible.
 - No tray and no system-dialog prompt: the in-app UI shows incoming requests, and
   the activity strip keeps the progress visible from any tab.
-- Keep the app open while transferring — Android may suspend background apps. A
-  foreground service (background receiving) is on the roadmap.
+- Background receiving is protected by a `dataSync` **foreground service** with a
+  low-importance ongoing notification (`LanDrop — Ready on Wi-Fi`), so the node
+  stays reachable with the screen off or the app minimized. Android can still
+  stop it if the user force-stops the app or an OEM ROM blocks background starts;
+  launching LanDrop again restarts the service.
 
 ## Updating an installed copy
 
@@ -348,7 +379,7 @@ process is gone. Two things make that visible instead of confusing:
 
 - Every build carries a **build marker** (the build time), reported by
   `/api/info` and shown in **Settings → This device → Version** as e.g.
-  `0.1.0 · 15 Oct, 20:34`. If that timestamp is older than your last build, you
+  `0.2.0 · 20 Oct, 15:04`. If that timestamp is older than your last build, you
   are still looking at the old copy.
 - The app refuses to attach to a node built from **different** sources. Launching
   a fresh build while an older copy is still running used to be swallowed by
@@ -385,8 +416,9 @@ process is gone. Two things make that visible instead of confusing:
   LanDrop is a no-account, no-login tool for trusted networks.
 - **Settings and trust are machine-local**: changing the device name, port,
   download folder, auto-accept, trusted devices or autostart is only accepted
-  from the machine running LanDrop. A phone on the LAN can send, accept and
-  reject, but cannot rewrite settings or mark itself trusted.
+  from the machine running LanDrop. `GET /api/info` reports `is_local`, and the
+  UI disables those controls for a phone or another laptop on the LAN instead of
+  letting it hit `403`s. Remote devices can still send, accept and reject.
 - **Browser-safe**: cross-origin requests are rejected and `Host` headers must be
   a plain IP/localhost, so a website you happen to visit cannot drive the local
   API (CSRF / DNS rebinding). The bundled UI ships a strict CSP.
@@ -417,10 +449,23 @@ process is gone. Two things make that visible instead of confusing:
   on-disk partial file exactly (`409` otherwise). Link-local, multicast and
   unspecified targets are refused, so the app can't be aimed at metadata
   endpoints or broadcast addresses.
+- **Payload encryption**: v0.2.0 file sends negotiate a fresh ephemeral X25519
+  session and XOR the upload body with an RFC 8439 ChaCha20 keystream at each
+  chunk's plaintext offset. The raw shared secret seeds the `NNN-NNN` PIN, so a
+  man-in-the-middle on the Wi-Fi would have to establish two different secrets
+  and the two screens would show different PINs. Offer metadata (filenames,
+  device names, notes), text snippets and the upload token still travel over
+  plain HTTP; the cipher protects file bytes, not the control plane. A peer that
+  sends no `dh_pub` keeps the v0.1.0 unencrypted path.
 - The verification PIN is a human check, not an authentication factor: it stops
   someone from talking you into the wrong transfer, but possession of the upload
-  token remains the actual authorization. Trusted peers are an explicit,
+  token remains the actual authorization. For encrypted transfers the PIN is the
+  cryptographic SAS above; for legacy peers it is derived from the sender,
+  receiver and batch/file identifiers. Trusted peers are an explicit,
   machine-local convenience and never override the shared-token setting.
+- Terminal history is stored in `<config dir>/history.json` (atomic write, mode
+  0600, newest 100 entries); **Clear history** removes the file. Saved files are
+  never touched by clearing history.
 - JSON request bodies are capped at 64 KiB; only the file-upload routes stream
   unbounded data, with free-space guards on both sides. Four uploads stream at a
   time per sender, so a large selection cannot open an unbounded number of
@@ -430,6 +475,10 @@ process is gone. Two things make that visible instead of confusing:
 
 | Location (Linux) | `~/.config/landrop/config.toml` |
 | Location (Windows) | `%APPDATA%\landrop\config.toml` |
+
+`history.json` lives next to the config file (`~/.config/landrop/history.json`),
+holds the newest 100 terminal transfers and received snippets, and is written
+atomically with mode 0600.
 
 ```toml
 id = "6c1f…"            # auto-generated, stable
@@ -610,12 +659,12 @@ landrop/
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /api/info` | device id, name, port, download dir, version, build, LAN IPs, free/total disk space |
+| `GET /api/info` | device id, name, port, download dir, version, build, LAN IPs, free/total disk space, `is_local` |
 | `GET /api/peers` | discovered + manual peers, each with `trusted`, `reachable` |
 | `POST /api/peers/manual` | add a manual peer (`{"address":"ip:port"}`) |
 | `POST /api/peers/trust` | trust/untrust a device (`{"peer_id":"…","trusted":true}`, local-only) |
 | `GET /api/transfers` | all transfers |
-| `POST /api/transfers/clear` | drop completed/failed/cancelled/rejected history (local-only; files stay) |
+| `POST /api/transfers/clear` | drop completed/failed/cancelled/rejected history and remove `history.json` (local-only; files stay) |
 | `POST /api/send` | start a send (multipart: repeat `target` for several devices, `file`, optional `rel_path`, `batch_id`, `batch_name`) |
 | `POST /api/send-path` | send local files/folders by path (desktop drop; walks folders, local-only) |
 | `POST /api/send-text` | send a text/link snippet (`{"text":"…","targets":["ip:port"]}`) |
@@ -627,8 +676,9 @@ landrop/
 | `GET /api/events` | SSE stream (`peer_updated`, `transfer_updated`, `transfers_cleared`, …) |
 | `POST /api/batches/{id}/accept` · `/reject` · `/cancel` | accept, reject or cancel a whole folder/batch in one request |
 | `GET /api/qr` | inline SVG QR for this node's LAN URL (optional `?share=<token>` for a share link) |
-| `POST /api/share-link` | stage a file for a 15-minute browser download and return `{token,url}` (local-only) |
-| `GET /d/{token}` | browser-direct download of a staged share link |
+| `POST /api/share-link` | stage one file, or a multi-file/folder selection as a `.zip`, for a 15-minute browser download and return `{token,url}` (local-only; repeat `file`/`rel_path` fields) |
+| `POST /api/share-link-path` | same as above for machine-local paths (`{"paths":["/abs/file-or-folder"]}`, local-only) |
+| `GET /d/{token}` | browser-direct download of a staged share link (single file or `.zip`) |
 | `DELETE /api/share-link/{token}` | revoke a share link and delete its staged file (local-only) |
 | `POST/GET /api/ui/shared-inbox` | queue / drain Android share-sheet paths and text (local-only) |
 | `POST /api/ui/selection` | publish the devices the local UI has selected (used by desktop drops) |
@@ -640,14 +690,16 @@ landrop/
 
 ```
 POST /api/v1/offer       {sender_id, sender_name, filename, size, sha256?, note?,
-                          rel_path?, batch_id?, batch_name?, text?}
+                          rel_path?, batch_id?, batch_name?, text?, dh_pub?}
+                         -> {transfer_id, status, receiver_id, dh_pub}
 GET  /api/v1/offer/{id}  {status: pending|accepted|rejected|completed,
-                          upload_url?, upload_token?}
+                          upload_url?, upload_token?, receiver_id, dh_pub}
 HEAD /api/v1/upload/{id} header X-LanDrop-Upload-Token
-                         -> 200, X-LanDrop-Offset: <bytes already on disk>
+                         -> 200, X-LanDrop-Offset: <plaintext bytes on disk>
 POST /api/v1/upload/{id} header X-LanDrop-Upload-Token,
-                         optional X-LanDrop-Offset: <resume position>
-                         body: raw file bytes
+                         optional X-LanDrop-Offset: <resume position>,
+                         X-LanDrop-Encrypted: chacha20-v1 (encrypted transfers)
+                         body: raw or ChaCha20-encrypted file bytes
 ```
 
 Offers time out after 120 s. The upload token is generated on accept and never
@@ -661,10 +713,21 @@ mid-stream keeps `.{filename}.part-{id}` on disk and leaves the transfer
 from the reported offset. A transfer with no progress for ten minutes is failed
 and its partial file removed.
 
-Each offer also carries a **verification PIN**: the first four bytes of
-`SHA-256("{sender_id}:{receiver_id}:{key}")` (big-endian, modulo 1,000,000),
-formatted `NNN-NNN`. `key` is the batch id when present, else
-`"{filename}:{size}"`.
+v0.2 offers add `dh_pub`, an ephemeral X25519 public key (hex). A receiver that
+sees it replies with its own `dh_pub` and `receiver_id`; both sides then derive
+`key = SHA-256("landrop-session-v1:" || X25519(shared) || transfer_id)` and a
+nonce from the same secret, where `transfer_id` is the receiver's id. Upload
+chunks are XORed with the ChaCha20 keystream at their plaintext offset, so the
+resume offset and the encryption offset are the same number and a retry never
+desynchronises the stream. The receiver decrypts before hashing and writing the
+partial file; `X-LanDrop-Offset` always reports plaintext bytes.
+
+Each offer also carries a **verification PIN**. For encrypted transfers it is
+the cryptographic SAS: the first four bytes of
+`SHA-256("landrop-sas:" || shared_secret || sender_id || receiver_id || key)`
+(big-endian, modulo 1,000,000), formatted `NNN-NNN`. Unencrypted v0.1 peers keep
+the legacy `SHA-256("{sender_id}:{receiver_id}:{key}")` derivation. `key` is the
+batch id when present, else `"{filename}:{size}"`.
 
 A batch is still one offer per file, all sharing `batch_id`; the receiver groups
 them into a single prompt and can accept/reject/cancel the whole set with
@@ -681,11 +744,16 @@ upload a body.
   receiver's reported offset); there is no manual pause/resume button.
 - A transfer with no progress for 10 minutes is failed automatically and its
   partial file is removed.
-- Transfer history is in-memory only (lost on restart). Terminal entries are
-  dropped after an hour, and **Clear history** removes them on demand without
-  touching saved files.
+- `history.json` keeps the newest 100 terminal entries; older rows are dropped.
+  **Clear history** removes the file on demand without touching saved files.
+- Encryption covers file payloads only. Offer metadata (filenames, device names,
+  notes), text snippets and the upload token still travel over plain HTTP, and a
+  v0.1.0 peer is served unencrypted for compatibility.
+- The 32-bit ChaCha20 block counter caps one encrypted transfer at roughly
+  256 GiB; the classic non-ZIP64 limit caps a share-link `.zip` at 4 GiB.
 - Settings and "open download folder" are only available from the machine running
-  LanDrop (sending, accepting and rejecting work from any LAN device).
+  LanDrop (sending, accepting and rejecting work from any LAN device, and the UI
+  disables the unavailable controls for guests).
 - Choosing a per-transfer save folder (and the folder browser) is likewise
   machine-local; accepts from other devices use the configured folder.
 - mDNS on some networks (client isolation, VPNs) is unreliable — manual peers
@@ -702,11 +770,10 @@ upload a body.
 
 ## Roadmap / next steps
 
-- Transfer history persisted to disk (JSON/SQLite), so Clear history and restart
-  keep a durable record
-- Android foreground service, so receiving survives backgrounding
 - Android SAF folder picker (scoped storage currently limits the in-app picker)
-- systemd user unit
+- A release keystore for store-ready Android builds (the published APK is signed
+  with a local debug keystore for sideloading)
+- Encrypting offer metadata and text snippets, not just file payloads
 
 ## License
 
