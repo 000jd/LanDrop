@@ -3,6 +3,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- mDNS discovery needs multicast packets to reach the app. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- Keep receiving while the app is in the background. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
@@ -37,6 +40,11 @@
                 <data android:mimeType="*/*" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".LanDropService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <provider
           android:name="androidx.core.content.FileProvider"

@@ -22,7 +22,21 @@ class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    startBackgroundService()
     handleShare(intent)
+  }
+
+  /// A foreground service keeps the node reachable with the screen off. Some
+  /// OEM ROMs restrict background starts; that must never crash the activity.
+  private fun startBackgroundService() {
+    runCatching {
+      val intent = Intent(this, LanDropService::class.java)
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        startForegroundService(intent)
+      } else {
+        startService(intent)
+      }
+    }
   }
 
   override fun onNewIntent(intent: Intent) {
@@ -42,6 +56,7 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onDestroy() {
+    runCatching { stopService(Intent(this, LanDropService::class.java)) }
     shareExecutor.shutdown()
     super.onDestroy()
   }

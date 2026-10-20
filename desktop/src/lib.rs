@@ -219,14 +219,16 @@ fn wait_for_port_free(port: u16, timeout: std::time::Duration) {
 /// then take over; if that is not possible, tell the user and exit instead of
 /// piling up windows or showing the older UI.
 fn start_backend(app: &tauri::AppHandle) -> Result<Backend> {
-    let mut options = node_options(app)?;
+    let options = node_options(app)?;
     #[cfg(desktop)]
-    {
+    let options = {
+        let mut options = options;
         let handle = app.clone();
         options.on_focus = Some(landrop::app::FocusHook(std::sync::Arc::new(move || {
             show_main(&handle)
         })));
-    }
+        options
+    };
     let config_dir: Option<PathBuf> = options.config_dir.clone().map(PathBuf::from);
     let dir_ref = config_dir.as_deref();
 
