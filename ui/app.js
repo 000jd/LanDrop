@@ -975,6 +975,35 @@ async function stopSharing() {
   }
 }
 
+/// One-click clipboard paste into the snippet box. Browsers may refuse
+/// `readText()` outside a user gesture or on insecure origins, so a friendly
+/// message points at Ctrl+V instead of failing silently.
+async function pasteText() {
+  const box = $("textToSend");
+  const btn = $("pasteTextBtn");
+  if (!navigator.clipboard || typeof navigator.clipboard.readText !== "function") {
+    toast("Clipboard read is not available in this browser", "warn");
+    return;
+  }
+  btn.disabled = true;
+  try {
+    const text = await navigator.clipboard.readText();
+    if (!text) {
+      toast("Clipboard is empty", "info");
+      return;
+    }
+    box.value = text;
+    box.focus();
+    box.dispatchEvent(new Event("input"));
+    toast("Pasted from the clipboard", "success");
+  } catch (_) {
+    toast("Clipboard access was blocked — use Ctrl+V in the box", "warn");
+  } finally {
+    btn.disabled = false;
+    updateSendTargetLabel();
+  }
+}
+
 async function sendText() {
   const el = $("textToSend");
   const text = el.value.trim();
@@ -1541,6 +1570,7 @@ function init() {
   };
   $("sendBtn").onclick = sendFiles;
   $("sendTextBtn").onclick = sendText;
+  $("pasteTextBtn").onclick = pasteText;
   $("textToSend").oninput = updateSendTargetLabel;
   $("textToSend").onkeydown = (e) => {
     // Ctrl+Enter / Cmd+Enter sends the snippet, like any chat box.

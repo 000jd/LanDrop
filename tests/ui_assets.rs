@@ -51,6 +51,7 @@ fn the_send_panel_has_its_snippet_and_share_controls() {
     for id in [
         "textToSend",
         "sendTextBtn",
+        "pasteTextBtn",
         "shareLinkBtn",
         "showQrBtn",
         "settingsQrBtn",

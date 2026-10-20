@@ -70,4 +70,22 @@ mod unix {
         assert!(uninstall.status.success());
         assert!(String::from_utf8_lossy(&uninstall.stdout).contains("LanDrop uninstalled."));
     }
+
+    #[test]
+    fn systemd_user_unit_matches_the_installer_targets() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let unit = std::fs::read_to_string(root.join("assets/landrop.service"))
+            .expect("assets/landrop.service is missing");
+        assert!(
+            unit.contains("ExecStart=%h/.local/bin/landrop --hidden"),
+            "the unit must start the user-local binary in the background"
+        );
+        assert!(unit.contains("Restart=on-failure"));
+        assert!(unit.contains("WantedBy=default.target"));
+
+        let makefile = std::fs::read_to_string(root.join("Makefile")).expect("read Makefile");
+        assert!(makefile.contains("install-service:"));
+        assert!(makefile.contains("uninstall-service:"));
+        assert!(makefile.contains("assets/landrop.service"));
+    }
 }

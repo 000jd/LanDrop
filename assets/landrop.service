@@ -1,0 +1,14 @@
+[Unit]
+Description=LanDrop — LAN file sharing
+Documentation=https://github.com/000jd/LanDrop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/landrop --hidden
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

@@ -800,6 +800,12 @@ select:focus {
   align-items: end;
 }
 
+.text-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .text-send textarea {
   width: 100%;
   min-height: 38px;

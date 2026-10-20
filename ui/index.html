@@ -91,7 +91,10 @@
           </div>
           <div class="text-send">
             <textarea id="textToSend" rows="2" placeholder="…or paste a link / some text to send"></textarea>
-            <button class="btn ghost sm" id="sendTextBtn" type="button">Send text</button>
+            <span class="text-actions">
+              <button class="btn ghost sm" id="pasteTextBtn" type="button" title="Paste from the clipboard">Paste</button>
+              <button class="btn ghost sm" id="sendTextBtn" type="button">Send text</button>
+            </span>
           </div>
           <div class="send-row">
             <strong id="sendTargetLabel">No device selected</strong>

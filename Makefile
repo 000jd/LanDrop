@@ -1,7 +1,8 @@
 # LanDrop — Makefile
 #
 # Targets: run, build, test, fmt, vet, clean, install-desktop,
-#          uninstall-desktop, desktop-dev, desktop-build
+#          uninstall-desktop, install-service, uninstall-service,
+#          desktop-dev, desktop-build
 #
 # Desktop installs are user-local (no sudo) under ~/.local.
 
@@ -15,11 +16,13 @@ APPSDIR     := $(PREFIX)/share/applications
 ICONDIR     := $(PREFIX)/share/icons/hicolor/256x256/apps
 SVGDIR      := $(PREFIX)/share/icons/hicolor/scalable/apps
 # Match `dirs::config_dir()` in the app (respects XDG_CONFIG_HOME).
-CONFIG_HOME := $(if $(XDG_CONFIG_HOME),$(XDG_CONFIG_HOME),$(HOME)/.config)
-AUTOSTART   := $(CONFIG_HOME)/autostart
+CONFIG_HOME  := $(if $(XDG_CONFIG_HOME),$(XDG_CONFIG_HOME),$(HOME)/.config)
+AUTOSTART    := $(CONFIG_HOME)/autostart
+SYSTEMD_USER := $(CONFIG_HOME)/systemd/user
 
 .PHONY: all run build test fmt vet clean icons \
         install-desktop uninstall-desktop \
+        install-service uninstall-service \
         desktop-dev desktop-build \
         mobile-targets mobile-init mobile-build mobile-build-phone \
         mobile-sign mobile-install mobile-dev
@@ -98,6 +101,28 @@ uninstall-desktop:
 	rm -f $(AUTOSTART)/landrop.desktop
 	-update-desktop-database $(APPSDIR) 2>/dev/null || true
 	-gtk-update-icon-cache -f -t $(PREFIX)/share/icons/hicolor 2>/dev/null || true
+	@echo "Uninstalled."
+
+# --- systemd user service (background receiver, no login autostart) --------
+
+# Install the binary and a `systemd --user` unit that keeps LanDrop running in
+# the background. `--hidden` means no window is opened; the LAN UI still works.
+install-service: build
+	@echo "==> Installing the LanDrop systemd user unit"
+	mkdir -p $(BINDIR) $(SYSTEMD_USER)
+	cp $(BIN) $(BINDIR)/landrop
+	cp assets/landrop.service $(SYSTEMD_USER)/landrop.service
+	-systemctl --user daemon-reload
+	-systemctl --user enable --now landrop.service
+	@echo ""
+	@echo "Enabled. Check it with: systemctl --user status landrop.service"
+	@echo "Remove it with: make uninstall-service"
+
+uninstall-service:
+	@echo "==> Removing the LanDrop systemd user unit"
+	-systemctl --user disable --now landrop.service
+	rm -f $(SYSTEMD_USER)/landrop.service
+	-systemctl --user daemon-reload
 	@echo "Uninstalled."
 
 # --- Android / Tauri mobile -------------------------------------------------
