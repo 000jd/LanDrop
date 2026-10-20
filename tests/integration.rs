@@ -175,6 +175,61 @@ async fn wait_for_incoming(state: &AppState, status: &str) -> TransferView {
     }
 }
 
+/// Parse an uncompressed zip written by `zip::write`: name -> bytes.
+fn read_stored_zip(data: &[u8]) -> std::collections::HashMap<String, Vec<u8>> {
+    fn u16_at(data: &[u8], at: usize) -> u16 {
+        u16::from_le_bytes([data[at], data[at + 1]])
+    }
+    fn u32_at(data: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]])
+    }
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &byte in bytes {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    0xEDB8_8320 ^ (crc >> 1)
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        crc ^ 0xFFFF_FFFF
+    }
+
+    let eocd = (0..data.len().saturating_sub(21))
+        .rev()
+        .find(|&at| u32_at(data, at) == 0x0605_4b50)
+        .expect("end of central directory");
+    assert_eq!(u16_at(data, eocd + 4), 0);
+    assert_eq!(u16_at(data, eocd + 6), 0);
+    let count = u16_at(data, eocd + 10) as usize;
+    assert_eq!(count, u16_at(data, eocd + 8) as usize);
+    let mut at = u32_at(data, eocd + 16) as usize;
+    let mut out = std::collections::HashMap::new();
+    for _ in 0..count {
+        assert_eq!(u32_at(data, at), 0x0201_4b50, "central header");
+        assert_eq!(u16_at(data, at + 10), 0, "entry is stored");
+        let expected_crc = u32_at(data, at + 16);
+        let size = u32_at(data, at + 20) as usize;
+        let name_len = u16_at(data, at + 28) as usize;
+        let extra = u16_at(data, at + 30) as usize;
+        let comment = u16_at(data, at + 32) as usize;
+        let local = u32_at(data, at + 42) as usize;
+        let name = String::from_utf8(data[at + 46..at + 46 + name_len].to_vec()).unwrap();
+        assert_eq!(u32_at(data, local), 0x0403_4b50, "local header");
+        let local_name = u16_at(data, local + 26) as usize;
+        let local_extra = u16_at(data, local + 28) as usize;
+        let start = local + 30 + local_name + local_extra;
+        let bytes = data[start..start + size].to_vec();
+        assert_eq!(crc32(&bytes), expected_crc, "CRC for {name}");
+        out.insert(name, bytes);
+        at += 46 + name_len + extra + comment;
+    }
+    out
+}
+
 /// File names currently in a directory.
 fn dir_names(dir: &std::path::Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(dir)
@@ -927,6 +982,116 @@ async fn qr_codes_and_browser_share_links() {
     assert_eq!(resp.status(), reqwest::StatusCode::GONE);
     assert!(!staged.exists(), "expired link must delete its staged file");
     assert!(!state.shares.read().await.contains_key("expired"));
+}
+
+#[tokio::test]
+async fn share_links_bundle_multi_file_and_folder_selections_as_zip() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, port, _) = instance("bob", dir.path().join("dl")).await;
+    let base = format!("http://127.0.0.1:{port}");
+    let client = reqwest::Client::new();
+
+    // Browser multipart share: two files that came from one folder.
+    let form = reqwest::multipart::Form::new()
+        .part(
+            "file",
+            reqwest::multipart::Part::bytes(b"first".to_vec()).file_name("one.txt"),
+        )
+        .part("rel_path", reqwest::multipart::Part::text("holiday"))
+        .part(
+            "file",
+            reqwest::multipart::Part::bytes(vec![0u8, 255, 7]).file_name("two.bin"),
+        )
+        .part("rel_path", reqwest::multipart::Part::text("holiday/day1"));
+    let resp = client
+        .post(format!("{base}/api/share-link"))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "share rejected: {resp:?}");
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["zipped"], true, "two files must be bundled: {body}");
+    assert_eq!(body["files"], 2, "{body}");
+    assert_eq!(body["filename"], "holiday.zip", "{body}");
+    let token = body["token"].as_str().unwrap().to_string();
+
+    let resp = client
+        .get(format!("{base}/d/{token}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "download failed: {resp:?}");
+    assert_eq!(
+        resp.headers()[reqwest::header::CONTENT_TYPE],
+        "application/zip"
+    );
+    let archive = resp.bytes().await.unwrap();
+    let entries = read_stored_zip(&archive);
+    assert_eq!(entries.len(), 2, "both shared files are in the archive");
+    assert_eq!(entries["holiday/one.txt"], b"first");
+    assert_eq!(entries["holiday/day1/two.bin"], [0u8, 255, 7]);
+    let resp = client
+        .delete(format!("{base}/api/share-link/{token}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    // Machine-local folder share (desktop drop / Android share sheet).
+    let folder = dir.path().join("trip");
+    std::fs::create_dir_all(folder.join("nested")).unwrap();
+    std::fs::write(folder.join("a.txt"), b"alpha").unwrap();
+    std::fs::write(folder.join("nested/b.txt"), b"beta").unwrap();
+    let resp = client
+        .post(format!("{base}/api/share-link-path"))
+        .json(&serde_json::json!({ "paths": [folder.to_string_lossy()] }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "path share rejected: {resp:?}");
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["zipped"], true, "{body}");
+    assert_eq!(body["filename"], "trip.zip", "{body}");
+    let token = body["token"].as_str().unwrap().to_string();
+    let archive = client
+        .get(format!("{base}/d/{token}"))
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    let entries = read_stored_zip(&archive);
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries["trip/a.txt"], b"alpha");
+    assert_eq!(entries["trip/nested/b.txt"], b"beta");
+
+    // Sharing one regular file by path still stages it directly.
+    let single = dir.path().join("single.txt");
+    std::fs::write(&single, b"one").unwrap();
+    let body: serde_json::Value = client
+        .post(format!("{base}/api/share-link-path"))
+        .json(&serde_json::json!({ "paths": [single.to_string_lossy()] }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["zipped"], false, "{body}");
+    assert_eq!(body["filename"], "single.txt", "{body}");
+    let token = body["token"].as_str().unwrap().to_string();
+    let bytes = client
+        .get(format!("{base}/d/{token}"))
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    assert_eq!(bytes.as_ref(), b"one");
+    assert!(single.exists(), "sharing must never move the original file");
 }
 
 #[tokio::test]

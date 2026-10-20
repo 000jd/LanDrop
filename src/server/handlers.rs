@@ -1547,11 +1547,179 @@ fn escape_header_filename(name: &str) -> String {
         .collect()
 }
 
+/// One uploaded (or referenced) file waiting to become a share link.
+struct ShareUpload {
+    path: PathBuf,
+    filename: String,
+    /// Folder the file came from, used as its path inside a bundle.
+    rel_path: Option<String>,
+    /// True for multipart staging files, which are deleted after bundling.
+    temporary: bool,
+}
+
+async fn cleanup_uploads(files: &[ShareUpload]) {
+    for file in files.iter().filter(|f| f.temporary) {
+        cleanup_file(&file.path).await;
+    }
+}
+
+/// Archive name for a multipart selection: the shared top-level folder when
+/// every file has one, otherwise a neutral selection name.
+fn multipart_zip_name(files: &[ShareUpload]) -> String {
+    let mut top: Option<String> = None;
+    for file in files {
+        let first = file
+            .rel_path
+            .as_deref()
+            .and_then(crate::protocol::sanitize_rel_dirs)
+            .and_then(|dirs| dirs.into_iter().next());
+        match (&top, first) {
+            (None, Some(name)) => top = Some(name),
+            (Some(existing), Some(name)) if existing == &name => {}
+            _ => return "LanDrop selection.zip".to_string(),
+        }
+    }
+    match top {
+        Some(name) => format!("{}.zip", crate::protocol::sanitize_filename(&name)),
+        None => "LanDrop selection.zip".to_string(),
+    }
+}
+
+/// Archive name for a path selection: a single folder keeps its name.
+fn roots_zip_name(roots: &[PathBuf]) -> String {
+    if let [root] = roots {
+        if root.is_dir() {
+            if let Some(name) = root.file_name().and_then(|n| n.to_str()) {
+                return format!("{}.zip", crate::protocol::sanitize_filename(name));
+            }
+        }
+    }
+    "LanDrop selection.zip".to_string()
+}
+
+/// Path of a file inside the archive (`folder/sub/file.txt`).
+fn zip_entry_name(rel_path: Option<&str>, filename: &str) -> String {
+    let filename = crate::protocol::sanitize_filename(filename);
+    match rel_path.and_then(crate::protocol::sanitize_rel_dirs) {
+        Some(dirs) => format!("{}/{}", dirs.join("/"), filename),
+        None => filename,
+    }
+}
+
+/// Keep names unique: two same-named files from different folders must both
+/// survive extraction.
+fn unique_zip_name(name: String, used: &mut std::collections::HashSet<String>) -> String {
+    if used.insert(name.clone()) {
+        return name;
+    }
+    let path = PathBuf::from(&name);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("file")
+        .to_string();
+    let ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_string_lossy().replace('\\', "/"));
+    for n in 1..=10_000 {
+        let candidate = match &parent {
+            Some(dir) => format!("{dir}/{stem}-{n}{ext}"),
+            None => format!("{stem}-{n}{ext}"),
+        };
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    format!("{stem}-{}{ext}", used.len())
+}
+
+/// Register a staged path under a fresh token and build the JSON response.
+async fn register_share(
+    state: &AppState,
+    path: PathBuf,
+    filename: String,
+    files: usize,
+    zipped: bool,
+) -> Response {
+    let token = uuid::Uuid::new_v4().to_string();
+    let expires_at = crate::transfer::now_secs() + 15 * 60;
+    state.shares.write().await.insert(
+        token.clone(),
+        crate::server::ShareEntry {
+            path,
+            filename: filename.clone(),
+            expires_at,
+        },
+    );
+    let base = primary_lan_url(state).await;
+    Json(json!({
+        "token": token,
+        "url": format!("{base}/d/{token}"),
+        "filename": filename,
+        "expires_at": expires_at,
+        "files": files,
+        "zipped": zipped,
+    }))
+    .into_response()
+}
+
+/// Bundle the selection into an uncompressed zip and register the archive.
+async fn register_zip(
+    state: &AppState,
+    dir: &std::path::Path,
+    files: Vec<ShareUpload>,
+    zip_name: String,
+) -> Response {
+    let mut used = std::collections::HashSet::new();
+    let entries: Vec<crate::zip::ZipEntry> = files
+        .iter()
+        .map(|file| crate::zip::ZipEntry {
+            name: unique_zip_name(
+                zip_entry_name(file.rel_path.as_deref(), &file.filename),
+                &mut used,
+            ),
+            path: file.path.clone(),
+        })
+        .collect();
+    let count = entries.len();
+    let output = dir.join(format!(".share-{}.zip", uuid::Uuid::new_v4()));
+    let output_for_task = output.clone();
+    let result =
+        tokio::task::spawn_blocking(move || crate::zip::write(&output_for_task, &entries)).await;
+    match result {
+        Ok(Ok(())) => {
+            cleanup_uploads(&files).await;
+            register_share(state, output, zip_name, count, true).await
+        }
+        Ok(Err(e)) => {
+            cleanup_file(&output).await;
+            cleanup_uploads(&files).await;
+            err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to bundle the selection: {e}"),
+            )
+        }
+        Err(e) => {
+            cleanup_file(&output).await;
+            cleanup_uploads(&files).await;
+            err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to bundle the selection: {e}"),
+            )
+        }
+    }
+}
+
 /// Create a temporary browser download link (local requests only).
 ///
-/// The file is staged in the outbox and served by [`api_download_share`] to any
-/// device on the LAN for fifteen minutes, so a phone can download without
-/// LanDrop installed.
+/// One file is staged and served directly. A multi-file selection or a folder
+/// is bundled into an uncompressed `.zip` in the outbox, so a phone can fetch
+/// the whole thing with one link without LanDrop installed.
 pub async fn api_share_link(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -1571,30 +1739,61 @@ pub async fn api_share_link(
         );
     }
 
-    let mut saved: Option<(PathBuf, String)> = None;
+    let mut files: Vec<ShareUpload> = Vec::new();
+    let mut pending_rel: Option<String> = None;
     loop {
         let field = match multipart.next_field().await {
             Ok(Some(field)) => field,
             Ok(None) => break,
             Err(e) => {
-                if let Some((path, _)) = saved.take() {
-                    let _ = tokio::fs::remove_file(&path).await;
-                }
+                cleanup_uploads(&files).await;
                 return err(StatusCode::BAD_REQUEST, format!("invalid body: {e}"));
             }
         };
+        if field.name() == Some("rel_path") {
+            match field.text().await {
+                Ok(value) => {
+                    let value = crate::protocol::truncate_chars(value.trim(), 1024);
+                    if !value.is_empty() {
+                        // The UI appends the path after its file, so attach it
+                        // there; a path that arrives first waits for the next.
+                        match files.last_mut().filter(|f| f.rel_path.is_none()) {
+                            Some(last) => last.rel_path = Some(value),
+                            None => pending_rel = Some(value),
+                        }
+                    }
+                }
+                Err(e) => {
+                    cleanup_uploads(&files).await;
+                    return err(StatusCode::BAD_REQUEST, format!("invalid body: {e}"));
+                }
+            }
+            continue;
+        }
         if field.name() != Some("file") {
             continue;
         }
+        if files.len() >= MAX_DROPPED_FILES {
+            cleanup_uploads(&files).await;
+            return err(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("up to {MAX_DROPPED_FILES} files per share link"),
+            );
+        }
         let filename = crate::protocol::sanitize_filename(field.file_name().unwrap_or("download"));
-        let path = dir.join(format!(".share-{}", uuid::Uuid::new_v4()));
-        let mut file = match tokio::fs::File::create(&path).await {
+        let path = dir.join(format!(".sharepart-{}", uuid::Uuid::new_v4()));
+        let mut options = tokio::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = match options.open(&path).await {
             Ok(file) => file,
             Err(e) => {
+                cleanup_uploads(&files).await;
                 return err(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("failed to stage the file: {e}"),
-                )
+                );
             }
         };
         let mut field = field;
@@ -1603,6 +1802,7 @@ pub async fn api_share_link(
                 Ok(Some(chunk)) => {
                     if let Err(e) = file.write_all(&chunk).await {
                         let _ = tokio::fs::remove_file(&path).await;
+                        cleanup_uploads(&files).await;
                         return err(
                             StatusCode::INTERNAL_SERVER_ERROR,
                             format!("failed to stage the file: {e}"),
@@ -1612,42 +1812,125 @@ pub async fn api_share_link(
                 Ok(None) => break,
                 Err(e) => {
                     let _ = tokio::fs::remove_file(&path).await;
+                    cleanup_uploads(&files).await;
                     return err(StatusCode::BAD_REQUEST, format!("invalid body: {e}"));
                 }
             }
         }
         if let Err(e) = file.flush().await {
             let _ = tokio::fs::remove_file(&path).await;
+            cleanup_uploads(&files).await;
             return err(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("failed to stage the file: {e}"),
             );
         }
-        saved = Some((path, filename));
-        break;
-    }
-    let Some((path, filename)) = saved else {
-        return err(StatusCode::BAD_REQUEST, "file is required");
-    };
-
-    let token = uuid::Uuid::new_v4().to_string();
-    let expires_at = crate::transfer::now_secs() + 15 * 60;
-    state.shares.write().await.insert(
-        token.clone(),
-        crate::server::ShareEntry {
+        files.push(ShareUpload {
             path,
-            filename: filename.clone(),
-            expires_at,
-        },
-    );
-    let base = primary_lan_url(&state).await;
-    Json(json!({
-        "token": token,
-        "url": format!("{base}/d/{token}"),
-        "filename": filename,
-        "expires_at": expires_at,
-    }))
-    .into_response()
+            filename,
+            rel_path: pending_rel.take(),
+            temporary: true,
+        });
+    }
+
+    if files.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "file is required");
+    }
+    let folder_hint = files.iter().any(|f| {
+        f.rel_path
+            .as_deref()
+            .is_some_and(|rel| !rel.trim().is_empty())
+    });
+    if files.len() == 1 && !folder_hint {
+        let file = files.pop().expect("one upload");
+        return register_share(&state, file.path, file.filename, 1, false).await;
+    }
+    let zip_name = multipart_zip_name(&files);
+    register_zip(&state, &dir, files, zip_name).await
+}
+
+/// Create a browser share link from machine-local paths (files or folders).
+///
+/// A single regular file is staged like `/api/share-link`; a folder or a
+/// multi-file selection becomes one `.zip`.
+pub async fn api_share_link_path(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if !is_local_peer(&addr) {
+        return err(
+            StatusCode::FORBIDDEN,
+            "share links can only be created from this machine",
+        );
+    }
+    let roots: Vec<PathBuf> = body["paths"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|v| v.as_str())
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .take(MAX_SHARED_FILES)
+                .collect()
+        })
+        .unwrap_or_default();
+    if roots.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "paths are required");
+    }
+    let (found, _skipped) = collect_sendable(&roots, MAX_DROPPED_FILES);
+    if found.is_empty() {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "no regular files in that selection",
+        );
+    }
+
+    let dir = staging_dir_for(state.config_dir.as_deref());
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to create staging dir: {e}"),
+        );
+    }
+
+    // A single regular file is served directly, but from a hard link (or copy)
+    // in the outbox: expiry removes the entry's path, never the original.
+    if roots.len() == 1 && found.len() == 1 && !roots[0].is_dir() {
+        let (source, _) = &found[0];
+        let filename = crate::protocol::sanitize_filename(
+            source
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("download"),
+        );
+        let staged = match stage_by_link_or_copy(source, &dir).await {
+            Ok(path) => path,
+            Err(e) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to stage the file: {e}"),
+                );
+            }
+        };
+        return register_share(&state, staged, filename, 1, false).await;
+    }
+
+    let files: Vec<ShareUpload> = found
+        .into_iter()
+        .map(|(path, rel_path)| ShareUpload {
+            filename: crate::protocol::sanitize_filename(
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("download"),
+            ),
+            path,
+            rel_path,
+            temporary: false,
+        })
+        .collect();
+    let zip_name = roots_zip_name(&roots);
+    register_zip(&state, &dir, files, zip_name).await
 }
 
 /// Serve a share link to any device on the LAN (`/d/{token}`).
@@ -1677,10 +1960,15 @@ pub async fn api_download_share(
         "attachment; filename=\"{}\"",
         escape_header_filename(&entry.filename)
     );
+    let content_type = if entry.filename.to_ascii_lowercase().ends_with(".zip") {
+        "application/zip"
+    } else {
+        "application/octet-stream"
+    };
     let mut headers = axum::http::HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
-        axum::http::HeaderValue::from_static("application/octet-stream"),
+        axum::http::HeaderValue::from_static(content_type),
     );
     if let Ok(value) = axum::http::HeaderValue::from_str(&len.to_string()) {
         headers.insert(header::CONTENT_LENGTH, value);

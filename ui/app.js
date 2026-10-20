@@ -905,7 +905,11 @@ function showQr(share) {
   if (activeShare) params.set("share", activeShare.token);
   $("qrImage").src = "/api/qr" + (params.toString() ? `?${params.toString()}` : "");
   $("qrUrl").textContent = activeShare ? activeShare.url : lanUrl();
-  $("qrTitle").textContent = activeShare ? "Share this file" : "Open LanDrop on your phone";
+  $("qrTitle").textContent = activeShare
+    ? activeShare.zipped
+      ? "Share these files"
+      : "Share this file"
+    : "Open LanDrop on your phone";
   $("qrNote").textContent = activeShare ? activeShare.filename : "";
   $("qrHint").textContent = activeShare
     ? "Link expires in 15 minutes"
@@ -915,16 +919,45 @@ function showQr(share) {
 }
 
 async function shareSelectedFile() {
-  const file = state.selectedFiles[0];
-  if (!file) { toast("Pick a file first", "warn"); return; }
-  const fd = new FormData();
-  fd.append("file", file, file.name);
+  const files = state.selectedFiles.slice();
+  const shared = state.sharedPaths.slice();
+  if (files.length === 0 && shared.length === 0) {
+    toast("Pick a file first", "warn");
+    return;
+  }
+  const btn = $("shareLinkBtn");
+  btn.disabled = true;
   try {
-    const info = await api("/api/share-link", { method: "POST", body: fd });
+    let info;
+    if (files.length > 0) {
+      // One file is served directly; a selection or folder is bundled as a zip
+      // by the node, preserving the relative paths of a dropped folder.
+      const fd = new FormData();
+      for (const file of files) {
+        fd.append("file", file, file.name);
+        const rel = state.relPaths.get(file);
+        if (rel) fd.append("rel_path", rel);
+      }
+      info = await api("/api/share-link", { method: "POST", body: fd });
+    } else {
+      // Android share-sheet items are absolute paths known to the node.
+      info = await api("/api/share-link-path", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paths: shared }),
+      });
+    }
     showQr(info);
-    toast("Share link ready — scan or copy it", "success");
+    toast(
+      info.zipped
+        ? `Shared ${info.files} files as one zip`
+        : "Share link ready — scan or copy it",
+      "success"
+    );
   } catch (e) {
     toast("Share failed: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
   }
 }
 

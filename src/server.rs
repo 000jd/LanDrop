@@ -133,7 +133,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/send-path", post(handlers::api_send_path))
         .route("/api/send-text", post(handlers::api_send_text))
         .route("/api/qr", get(handlers::api_qr))
-        .route("/api/share-link", post(handlers::api_share_link))
+        // Share links upload one or more files, so they opt out of the small
+        // JSON body limit like `/api/send`.
+        .route(
+            "/api/share-link",
+            post(handlers::api_share_link).layer(DefaultBodyLimit::disable()),
+        )
+        .route("/api/share-link-path", post(handlers::api_share_link_path))
         .route(
             "/api/share-link/{token}",
             axum::routing::delete(handlers::api_delete_share),

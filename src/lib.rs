@@ -14,6 +14,7 @@
 //! - [`autostart`]: session login autostart (background receiver).
 //! - [`instance`]: single-instance lock file (pid + port).
 //! - [`util`]: small shared helpers (detached processes, disk space).
+//! - [`zip`]: minimal ZIP writer for browser share-link bundles.
 
 /// Compile-time build marker (unix seconds of the last source/UI change).
 ///
@@ -37,3 +38,4 @@ pub mod protocol;
 pub mod server;
 pub mod transfer;
 pub mod util;
+pub mod zip;
