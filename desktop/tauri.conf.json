@@ -18,12 +18,30 @@
     "active": true,
     "targets": ["deb", "rpm", "appimage"],
     "icon": [
-      "../assets/icon.svg",
-      "../assets/icon.png"
+      "../assets/icon-32.png",
+      "../assets/icon-128.png",
+      "../assets/icon.png",
+      "../assets/icon-512.png",
+      "../assets/icon.ico",
+      "../assets/icon.icns",
+      "../assets/icon.svg"
     ],
     "linux": {
       "deb": {
-        "depends": []
+        "depends": [],
+        "files": {
+          "/usr/share/icons/hicolor/scalable/apps/landrop-desktop.svg": "../assets/icon.svg"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/share/icons/hicolor/scalable/apps/landrop-desktop.svg": "../assets/icon.svg"
+        }
+      },
+      "appimage": {
+        "files": {
+          "/usr/share/icons/hicolor/scalable/apps/landrop-desktop.svg": "../assets/icon.svg"
+        }
       }
     }
   }

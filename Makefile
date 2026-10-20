@@ -13,7 +13,10 @@ CARGO     := cargo
 PREFIX      := $(HOME)/.local
 BINDIR      := $(PREFIX)/bin
 APPSDIR     := $(PREFIX)/share/applications
-ICONDIR     := $(PREFIX)/share/icons/hicolor/256x256/apps
+ICON32DIR   := $(PREFIX)/share/icons/hicolor/32x32/apps
+ICON128DIR  := $(PREFIX)/share/icons/hicolor/128x128/apps
+ICON256DIR  := $(PREFIX)/share/icons/hicolor/256x256/apps
+ICON512DIR  := $(PREFIX)/share/icons/hicolor/512x512/apps
 SVGDIR      := $(PREFIX)/share/icons/hicolor/scalable/apps
 # Match `dirs::config_dir()` in the app (respects XDG_CONFIG_HOME).
 CONFIG_HOME  := $(if $(XDG_CONFIG_HOME),$(XDG_CONFIG_HOME),$(HOME)/.config)
@@ -61,17 +64,22 @@ icons:
 # Install the desktop app (Tauri window) for the current user — no root needed.
 # Writes ~/.local/bin/landrop-desktop plus a .desktop entry that shadows the
 # distribution package in the application menu.
-install-app:
+install-app: icons
 	./scripts/install-desktop-app.sh
 
-install-desktop: build
+install-desktop: build icons
 	@echo "==> Installing LanDrop to $(PREFIX)"
-	mkdir -p $(BINDIR) $(APPSDIR) $(ICONDIR) $(SVGDIR) $(AUTOSTART)
+	mkdir -p $(BINDIR) $(APPSDIR) $(ICON32DIR) $(ICON128DIR) $(ICON256DIR) $(ICON512DIR) $(SVGDIR) $(AUTOSTART)
 	cp $(BIN) $(BINDIR)/landrop
 	cp assets/landrop.desktop $(APPSDIR)/landrop.desktop
 	cp assets/icon.svg $(SVGDIR)/landrop.svg
-	cp assets/icon.png $(ICONDIR)/landrop.png
-	sed -i "s|^Exec=.*|Exec=$(BINDIR)/landrop|" $(APPSDIR)/landrop.desktop
+	cp assets/icon-32.png $(ICON32DIR)/landrop.png
+	cp assets/icon-128.png $(ICON128DIR)/landrop.png
+	cp assets/icon.png $(ICON256DIR)/landrop.png
+	cp assets/icon-512.png $(ICON512DIR)/landrop.png
+	sed -i -e "s|^Exec=.*|Exec=$(BINDIR)/landrop|" \
+	  -e "s|^StartupWMClass=.*|StartupWMClass=landrop|" \
+	  $(APPSDIR)/landrop.desktop
 	@# Background receiver on login so other devices can still see this one.
 	printf '%s\n' \
 	  '[Desktop Entry]' \
@@ -96,7 +104,10 @@ uninstall-desktop:
 	@echo "==> Removing LanDrop from $(PREFIX)"
 	rm -f $(BINDIR)/landrop
 	rm -f $(APPSDIR)/landrop.desktop
-	rm -f $(ICONDIR)/landrop.png
+	rm -f $(ICON32DIR)/landrop.png
+	rm -f $(ICON128DIR)/landrop.png
+	rm -f $(ICON256DIR)/landrop.png
+	rm -f $(ICON512DIR)/landrop.png
 	rm -f $(SVGDIR)/landrop.svg
 	rm -f $(AUTOSTART)/landrop.desktop
 	-update-desktop-database $(APPSDIR) 2>/dev/null || true
@@ -145,12 +156,14 @@ mobile-targets:  ## add the Rust android targets
 mobile-init:     ## generate desktop/gen/android (committed on purpose)
 	cd desktop && $(MOBILE_ENV) cargo tauri android init
 
-mobile-build:    ## APK for the emulator (x86_64)
+mobile-build: icons    ## APK for the emulator (x86_64)
 	cd desktop && $(MOBILE_ENV) cargo tauri android build --apk --target x86_64
+	python3 scripts/generate_icons.py --verify-android
 	@echo "unsigned: $(APK_UNSIGNED)"
 
-mobile-build-phone:  ## APK for real phones (aarch64)
+mobile-build-phone: icons  ## APK for real phones (aarch64)
 	cd desktop && $(MOBILE_ENV) cargo tauri android build --apk --target aarch64
+	python3 scripts/generate_icons.py --verify-android
 
 mobile-sign:     ## sign the last APK with a local debug keystore
 	@test -f "$(DEBUG_KEY)" || keytool -genkeypair -keystore "$(DEBUG_KEY)" -storepass android \
@@ -159,7 +172,10 @@ mobile-sign:     ## sign the last APK with a local debug keystore
 	"$(ANDROID_HOME)/build-tools/$(BT_VERSION)/zipalign" -p -f 4 "$(APK_UNSIGNED)" "$(APK_UNSIGNED).aligned"
 	"$(ANDROID_HOME)/build-tools/$(BT_VERSION)/apksigner" sign --ks "$(DEBUG_KEY)" --ks-pass pass:android \
 	  --key-pass pass:android --out "$(APK_SIGNED)" "$(APK_UNSIGNED).aligned"
+	@mkdir -p bin
+	cp "$(APK_SIGNED)" bin/LanDrop-android-arm64.apk
 	@echo "signed: $(APK_SIGNED)"
+	@echo "copied: bin/LanDrop-android-arm64.apk"
 
 mobile-install: mobile-sign  ## install on a connected device/emulator
 	"$(ANDROID_HOME)/platform-tools/adb" install -r "$(APK_SIGNED)"
@@ -169,7 +185,7 @@ mobile-dev:      ## run with hot reload on a device/emulator
 
 # --- Tauri desktop wrapper -------------------------------------------------
 
-desktop-dev:
+desktop-dev: icons
 	@if command -v cargo-tauri >/dev/null 2>&1; then \
 		cd desktop && cargo tauri dev; \
 	else \
@@ -178,7 +194,7 @@ desktop-dev:
 		exit 1; \
 	fi
 
-desktop-build:
+desktop-build: icons
 	@if command -v cargo-tauri >/dev/null 2>&1; then \
 		cd desktop && cargo tauri build; \
 	else \

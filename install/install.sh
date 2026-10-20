@@ -92,9 +92,16 @@ do_uninstall() {
     "${BIN_DIR}/${DESKTOP_NAME}" \
     "${APPS_DIR}/landrop.desktop" \
     "${APPS_DIR}/LanDrop.desktop" \
-    "${ICON_ROOT}/scalable/apps/landrop.svg" \
+    "${ICON_ROOT}/32x32/apps/landrop.png" \
+    "${ICON_ROOT}/32x32/apps/landrop-desktop.png" \
+    "${ICON_ROOT}/128x128/apps/landrop.png" \
+    "${ICON_ROOT}/128x128/apps/landrop-desktop.png" \
     "${ICON_ROOT}/256x256/apps/landrop.png" \
-    "${ICON_ROOT}/256x256/apps/landrop-desktop.png"; do
+    "${ICON_ROOT}/256x256/apps/landrop-desktop.png" \
+    "${ICON_ROOT}/512x512/apps/landrop.png" \
+    "${ICON_ROOT}/512x512/apps/landrop-desktop.png" \
+    "${ICON_ROOT}/scalable/apps/landrop.svg" \
+    "${ICON_ROOT}/scalable/apps/landrop-desktop.svg"; do
     if [ -e "$path" ] || [ -L "$path" ]; then
       if [ "$DRY_RUN" -eq 1 ]; then
         log "would remove $path"
@@ -107,8 +114,13 @@ do_uninstall() {
   done
   if [ "$removed" -eq 0 ]; then
     log "LanDrop is not installed under ${HOME}/.local."
-  elif [ "$DRY_RUN" -eq 0 ] && command -v update-desktop-database >/dev/null 2>&1; then
-    update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
+  elif [ "$DRY_RUN" -eq 0 ]; then
+    if command -v update-desktop-database >/dev/null 2>&1; then
+      update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
+    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+      gtk-update-icon-cache -f -t "$ICON_ROOT" >/dev/null 2>&1 || true
+    fi
   fi
   log "LanDrop uninstalled."
   exit 0
@@ -297,17 +309,24 @@ install_desktop() {
   fi
 
   mkdir -p "$BIN_DIR" "$APPS_DIR" \
-    "${ICON_ROOT}/scalable/apps" "${ICON_ROOT}/256x256/apps"
+    "${ICON_ROOT}/32x32/apps" "${ICON_ROOT}/128x128/apps" \
+    "${ICON_ROOT}/256x256/apps" "${ICON_ROOT}/512x512/apps" \
+    "${ICON_ROOT}/scalable/apps"
   install -m 0755 "$target" "${BIN_DIR}/${DESKTOP_NAME}"
 
   # Icons come from the tagged source tree (best effort; the app still runs
-  # without them).
+  # without them). Every hicolor size plus the scalable SVG keeps X11 and
+  # Wayland docks sharp and lets notifications find the logo.
   local icon_base="https://raw.githubusercontent.com/${REPO}/${TAG}/assets"
+  local size
+  for size in 32 128 256 512; do
+    if fetch "${icon_base}/icon-${size}.png" "${TMP}/icon-${size}.png" 2>/dev/null; then
+      install -m 0644 "${TMP}/icon-${size}.png" \
+        "${ICON_ROOT}/${size}x${size}/apps/${DESKTOP_NAME}.png"
+    fi
+  done
   if fetch "${icon_base}/icon.svg" "${TMP}/icon.svg" 2>/dev/null; then
-    install -m 0644 "${TMP}/icon.svg" "${ICON_ROOT}/scalable/apps/landrop.svg"
-  fi
-  if fetch "${icon_base}/icon.png" "${TMP}/icon.png" 2>/dev/null; then
-    install -m 0644 "${TMP}/icon.png" "${ICON_ROOT}/256x256/apps/landrop.png"
+    install -m 0644 "${TMP}/icon.svg" "${ICON_ROOT}/scalable/apps/${DESKTOP_NAME}.svg"
   fi
 
   cat >"${APPS_DIR}/landrop.desktop" <<EOF
@@ -316,14 +335,19 @@ Type=Application
 Name=LanDrop
 Comment=LAN file sharing on your own network
 Exec=${BIN_DIR}/${DESKTOP_NAME}
-Icon=landrop
+Icon=${DESKTOP_NAME}
 Terminal=false
 Categories=Network;FileTransfer;
-StartupNotify=false
+Keywords=file;transfer;lan;share;wifi;
+StartupNotify=true
+StartupWMClass=${DESKTOP_NAME}
 EOF
   chmod 0644 "${APPS_DIR}/landrop.desktop"
   if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
+  fi
+  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -f -t "$ICON_ROOT" >/dev/null 2>&1 || true
   fi
 
   log "  installed ${BIN_DIR}/${DESKTOP_NAME}"

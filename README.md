@@ -127,7 +127,10 @@ make desktop-build   # release bundles -> target/release/bundle/ (deb / rpm / Ap
 Requires the Tauri Linux dependencies (see [docs/DESKTOP.md](docs/DESKTOP.md)).
 The app starts the backend inside the process, opens a native window pointing at
 the local UI, and adds a tray icon (Open / Downloads / Quit); quitting shuts the
-backend down gracefully.
+backend down gracefully. Bundles include the 32/128/256/512 hicolor icons plus a
+scalable SVG, and the generated desktop entry sets
+`StartupWMClass=landrop-desktop` so X11/Wayland docks match the window. Running
+`make icons` regenerates every raster/Android derivative from `assets/icon.svg`.
 
 Or install it for your user, without sudo:
 
@@ -612,8 +615,12 @@ landrop/
   README.md
   assets/
     icon.svg            # app icon (SVG, canonical mark)
-    icon.png            # 256x256 mark (launcher/app icon)
-    icon-32.png/.rgba   # tray icon for the desktop wrapper
+    icon-32.png/.rgba   # 32x32 tray icon + raw RGBA
+    icon-64.rgba        # 64x64 window icon
+    icon-128.png        # hicolor 128x128
+    icon.png            # hicolor 256x256
+    icon-512.png        # hicolor 512x512
+    icon.ico / .icns    # Windows / macOS bundle icons
     icon-soft.png       # 128x128 mark on UI grey (header logo)
     icon-with-name.png  # full logo with name (docs)
     landrop.desktop     # Linux desktop entry

@@ -62,6 +62,28 @@ cargo tauri build --no-bundle   # just the binary (fast)
 The release binary is `target/release/landrop-desktop`; bundles
 (`.deb`, `.rpm`, `.appimage`) land in `target/release/bundle/`.
 
+## Icons and desktop integration
+
+`assets/icon.svg` is the only source; `make icons` (or
+`python3 scripts/generate_icons.py`) renders every derivative:
+
+- `assets/icon-{32,128}.png`, `icon.png` (256), `icon-512.png`, `icon.ico`,
+  `icon.icns`, plus the raw `icon-32.rgba` / `icon-64.rgba` used by the tray and
+  window.
+- the Android launcher PNGs in every density bucket, the 108dp adaptive
+  foregrounds, and the VectorDrawable XMLs
+  (`drawable/ic_launcher_{background,foreground}.xml`). The generator also
+  verifies `AndroidManifest.xml` has both `android:icon` and
+  `android:roundIcon`; pass `--verify-android` to check without writing.
+
+The Tauri bundles list all PNG sizes, so `.deb`/`.rpm` install the same
+32/128/256/512 hicolor set and the AppImage picks the 512px icon. The packaging
+tool writes `StartupWMClass=landrop-desktop`; `scripts/install-desktop-app.sh`
+uses the same value for a user-local install. `src/notify.rs` looks for both
+`landrop.*` and `landrop-desktop.*` under `~/.local/share/icons/hicolor` and
+`/usr/share/icons/hicolor`, so notifications find the logo however the app was
+installed.
+
 ## What the desktop app does
 
 1. Starts the LanDrop backend via `landrop::app::start_node` (same code path

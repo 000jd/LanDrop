@@ -10,7 +10,7 @@
 //! ignored: notifications are best-effort.
 
 #[cfg(target_os = "linux")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::Command;
 #[cfg(target_os = "linux")]
@@ -18,17 +18,54 @@ use std::sync::OnceLock;
 
 use crate::transfer::TransferManager;
 
-/// Best-effort path to the SVG (or SVG-derived) app icon for notify-send.
+/// Icon names installed by the different packaging paths: the CLI/browser
+/// entry uses `landrop`, the Tauri desktop package uses `landrop-desktop`.
+#[cfg(target_os = "linux")]
+const ICON_NAMES: [&str; 2] = ["landrop", "landrop-desktop"];
+
+#[cfg(target_os = "linux")]
+fn push_theme_icons(out: &mut Vec<PathBuf>, root: &Path, name: &str) {
+    out.push(root.join("scalable/apps").join(format!("{name}.svg")));
+    for size in ["512x512", "256x256", "128x128", "64x64", "48x48", "32x32"] {
+        out.push(root.join(size).join("apps").join(format!("{name}.png")));
+    }
+}
+
+/// Candidate icon paths, most specific install first: user-local (`make
+/// install-desktop` / `install-desktop-app.sh`), the AppImage mount, then the
+/// system hicolor tree installed by the `.deb` and `.rpm`.
+#[cfg(target_os = "linux")]
+fn icon_candidates(home: Option<&Path>, appdir: Option<&Path>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(home) = home {
+        let hicolor = home.join(".local/share/icons/hicolor");
+        for name in ICON_NAMES {
+            push_theme_icons(&mut candidates, &hicolor, name);
+        }
+    }
+    if let Some(appdir) = appdir {
+        candidates.push(appdir.join("landrop-desktop.png"));
+        candidates.push(appdir.join("LanDrop.png"));
+        candidates.push(appdir.join(".DirIcon"));
+    }
+    let system = Path::new("/usr/share/icons/hicolor");
+    for name in ICON_NAMES {
+        push_theme_icons(&mut candidates, system, name);
+    }
+    for name in ICON_NAMES {
+        candidates.push(Path::new("/usr/share/pixmaps").join(format!("{name}.png")));
+    }
+    candidates
+}
+
+/// Best-effort path to the SVG/PNG app icon for notify-send.
 #[cfg(target_os = "linux")]
 fn notification_icon() -> String {
-    if let Ok(home) = std::env::var("HOME") {
-        let svg = PathBuf::from(&home).join(".local/share/icons/hicolor/scalable/apps/landrop.svg");
-        if svg.is_file() {
-            return svg.to_string_lossy().into_owned();
-        }
-        let png = PathBuf::from(&home).join(".local/share/icons/hicolor/256x256/apps/landrop.png");
-        if png.is_file() {
-            return png.to_string_lossy().into_owned();
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let appdir = std::env::var_os("APPDIR").map(PathBuf::from);
+    for path in icon_candidates(home.as_deref(), appdir.as_deref()) {
+        if path.is_file() {
+            return path.to_string_lossy().into_owned();
         }
     }
     "landrop".into()
@@ -538,6 +575,31 @@ fn kdialog_yesno(body: &str) -> Option<Decision> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_icon_candidates_cover_every_install_layout() {
+        let home = Path::new("/home/tester");
+        let appdir = Path::new("/tmp/.mount_LanDrop");
+        let paths: Vec<String> = icon_candidates(Some(home), Some(appdir))
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        for expected in [
+            "/home/tester/.local/share/icons/hicolor/scalable/apps/landrop.svg",
+            "/home/tester/.local/share/icons/hicolor/256x256/apps/landrop.png",
+            "/home/tester/.local/share/icons/hicolor/scalable/apps/landrop-desktop.svg",
+            "/home/tester/.local/share/icons/hicolor/512x512/apps/landrop-desktop.png",
+            "/tmp/.mount_LanDrop/landrop-desktop.png",
+            "/usr/share/icons/hicolor/scalable/apps/landrop.svg",
+            "/usr/share/icons/hicolor/256x256/apps/landrop-desktop.png",
+            "/usr/share/pixmaps/landrop.png",
+        ] {
+            assert!(
+                paths.iter().any(|p| p == expected),
+                "missing icon candidate {expected}: {paths:?}"
+            );
+        }
+    }
 
     #[test]
     fn gdbus_args_carry_replace_id_and_progress_hint() {

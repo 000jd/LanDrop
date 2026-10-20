@@ -9,3 +9,4 @@ Type=Application
 Categories=Utility;Network;FileTransfer;
 Keywords=file;transfer;lan;share;wifi;
 StartupNotify=true
+StartupWMClass=landrop
