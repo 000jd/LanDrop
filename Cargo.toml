@@ -7,7 +7,7 @@ exclude = ["fuzz"]
 
 [package]
 name = "landrop"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 # Practical floor, measured: locked dependencies (icu_* via url, idna_adapter)
 # need 1.86; the hand-written code itself compiles on much older toolchains.
